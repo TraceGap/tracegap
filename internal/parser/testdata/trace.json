@@ -1,0 +1,32 @@
+{
+  "resourceSpans": [
+    {
+      "scopeSpans": [
+        {
+          "spans": [
+            {
+              "spanId": "root1",
+              "name": "checkout.request",
+              "startTimeUnixNano": "0",
+              "endTimeUnixNano": "1000000000"
+            },
+            {
+              "spanId": "c1",
+              "parentSpanId": "root1",
+              "name": "auth",
+              "startTimeUnixNano": "0",
+              "endTimeUnixNano": "200000000"
+            },
+            {
+              "spanId": "c2",
+              "parentSpanId": "root1",
+              "name": "inventory",
+              "startTimeUnixNano": "400000000",
+              "endTimeUnixNano": "700000000"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

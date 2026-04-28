@@ -1,0 +1,38 @@
+TraceGap Audit
+
+Trace coverage: 50%
+Unaccounted time: 50% (500ms)
+
+Largest gaps:
+1. 700ms-1s (300ms)
+   Likely causes:
+   - Likely missing child span around internal work
+   - Possible missing outbound HTTP/gRPC/client span
+   - Possible missing database span
+   - Possible trace context propagation issue
+   - Possible async/background work not linked to parent
+   - Possible middleware/framework time not instrumented
+   Recommended checks:
+   1. Add spans around external calls (HTTP, DB, RPC)
+   2. Ensure trace context propagation (headers/context)
+   3. Inspect retry/backoff or async logic
+   4. Check framework/middleware instrumentation
+2. 200ms-400ms (200ms)
+   Likely causes:
+   - Likely missing child span around internal work
+   - Possible missing outbound HTTP/gRPC/client span
+   - Possible missing database span
+   - Possible trace context propagation issue
+   - Possible async/background work not linked to parent
+   - Possible middleware/framework time not instrumented
+   Recommended checks:
+   1. Add spans around external calls (HTTP, DB, RPC)
+   2. Ensure trace context propagation (headers/context)
+   3. Inspect retry/backoff or async logic
+   4. Check framework/middleware instrumentation
+
+checkout.request (1s)
+================................========================........................
+covered: 500ms | gap: 500ms
+
+Your tracing likely does not cover a significant portion of request time.
