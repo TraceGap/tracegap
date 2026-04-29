@@ -25,6 +25,7 @@ Binary output:
 
 ```text
 dist/tgap
+dist/tracegap -> tgap
 ```
 
 You can also run directly with Go:
@@ -40,6 +41,8 @@ Supported commands only:
 ```bash
 tgap audit trace.json
 tgap audit trace.json --format json
+tracegap audit trace.json
+tracegap audit trace.json --format json
 ```
 
 No other commands are implemented in v1.
@@ -131,12 +134,16 @@ Force ASCII mode:
 
 ```bash
 TGAP_ASCII=1 tgap audit trace.json
+# alias command works too
+TGAP_ASCII=1 tracegap audit trace.json
 ```
 
 ## JSON Output Example
 
 ```bash
 tgap audit trace.json --format json
+# alias command works too
+tracegap audit trace.json --format json
 ```
 
 Returns structured output including:
@@ -166,10 +173,13 @@ Nothing to audit. Provide a trace JSON file.
 Usage:
   tgap audit trace.json
   tgap audit trace.json --format json
+   tracegap audit trace.json
+   tracegap audit trace.json --format json
 
 To get started:
    Export a trace as JSON (OTLP/Jaeger) and run:
    tgap audit <trace.json>
+   tracegap audit <trace.json>
 ```
 
 ## Development
@@ -205,6 +215,8 @@ Targets produced in dist:
 - tgap-linux-amd64
 - tgap-linux-arm64
 - tgap-windows-amd64.exe
+
+Note: local `make build` also creates `dist/tracegap` as a symlink to `dist/tgap`.
 
 ## Notes
 

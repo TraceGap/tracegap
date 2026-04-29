@@ -114,6 +114,8 @@ func printUsage(w *os.File) {
 	fmt.Fprintln(w, "Usage:")
 	fmt.Fprintln(w, "  tgap audit trace.json")
 	fmt.Fprintln(w, "  tgap audit trace.json --format json")
+	fmt.Fprintln(w, "  tracegap audit trace.json")
+	fmt.Fprintln(w, "  tracegap audit trace.json --format json")
 }
 
 func printNoFileHelp(w *os.File) {
@@ -121,4 +123,5 @@ func printNoFileHelp(w *os.File) {
 	fmt.Fprintln(w, "To get started:")
 	fmt.Fprintln(w, "  Export a trace as JSON (OTLP/Jaeger) and run:")
 	fmt.Fprintln(w, "  tgap audit <trace.json>")
+	fmt.Fprintln(w, "  tracegap audit <trace.json>")
 }

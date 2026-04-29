@@ -1,5 +1,6 @@
 GO ?= go
 BINARY ?= tgap
+ALIAS_BINARY ?= tracegap
 OUT_DIR ?= dist
 CGO_ENABLED ?= 0
 
@@ -21,6 +22,7 @@ build: build-local
 
 build-local:
 	CGO_ENABLED=$(CGO_ENABLED) $(GO) build -ldflags "$(LDFLAGS)" -o $(OUT_DIR)/$(BINARY) $(PKG)
+	ln -sf $(BINARY) $(OUT_DIR)/$(ALIAS_BINARY)
 
 cross-build: darwin-amd64 darwin-arm64 linux-amd64 linux-arm64 windows-amd64
 
