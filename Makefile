@@ -3,11 +3,12 @@ BINARY ?= tgap
 ALIAS_BINARY ?= tracegap
 OUT_DIR ?= dist
 CGO_ENABLED ?= 0
+GORELEASER ?= goreleaser
 
 PKG := ./cmd/tgap
 LDFLAGS := -s -w
 
-.PHONY: test benchmark lint build build-local clean cross-build darwin-amd64 darwin-arm64 linux-amd64 linux-arm64 windows-amd64
+.PHONY: test benchmark lint build build-local clean cross-build darwin-amd64 darwin-arm64 linux-amd64 linux-arm64 windows-amd64 release release-snapshot
 
 test:
 	$(GO) test -count=1 ./...
@@ -48,3 +49,9 @@ windows-amd64:
 
 clean:
 	rm -rf $(OUT_DIR)
+
+release:
+	$(GORELEASER) release --clean
+
+release-snapshot:
+	$(GORELEASER) release --snapshot --clean
