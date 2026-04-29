@@ -18,12 +18,19 @@ const (
 	exitInvalidInput = 2
 )
 
+var version = "dev"
+
 func main() {
 	exitCode := run(os.Args[1:])
 	os.Exit(exitCode)
 }
 
 func run(args []string) int {
+	if isVersionCommand(args) {
+		printVersion(os.Stdout)
+		return exitSuccess
+	}
+
 	format, traceFile, err := parseArgs(args)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())
@@ -114,8 +121,10 @@ func printUsage(w *os.File) {
 	fmt.Fprintln(w, "Usage:")
 	fmt.Fprintln(w, "  tgap audit trace.json")
 	fmt.Fprintln(w, "  tgap audit trace.json --format json")
+	fmt.Fprintln(w, "  tgap --version")
 	fmt.Fprintln(w, "  tracegap audit trace.json")
 	fmt.Fprintln(w, "  tracegap audit trace.json --format json")
+	fmt.Fprintln(w, "  tracegap --version")
 }
 
 func printNoFileHelp(w *os.File) {
@@ -124,4 +133,15 @@ func printNoFileHelp(w *os.File) {
 	fmt.Fprintln(w, "  Export a trace as JSON (OTLP/Jaeger) and run:")
 	fmt.Fprintln(w, "  tgap audit <trace.json>")
 	fmt.Fprintln(w, "  tracegap audit <trace.json>")
+}
+
+func isVersionCommand(args []string) bool {
+	if len(args) != 1 {
+		return false
+	}
+	return args[0] == "--version" || args[0] == "-v" || args[0] == "version"
+}
+
+func printVersion(w *os.File) {
+	fmt.Fprintf(w, "tracegap version %s\n", version)
 }

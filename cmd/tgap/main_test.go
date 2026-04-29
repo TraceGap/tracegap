@@ -1,8 +1,10 @@
 package main
 
 import (
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"tracegap/internal/output"
@@ -102,4 +104,52 @@ func TestRun_UnknownSchemaExitCode1(t *testing.T) {
 	if got, want := run([]string{"audit", fixture}), exitRuntimeError; got != want {
 		t.Fatalf("run exit code: got %d want %d", got, want)
 	}
+}
+
+func TestRun_VersionFlag(t *testing.T) {
+	output := captureStdout(t, func() {
+		if got, want := run([]string{"--version"}), exitSuccess; got != want {
+			t.Fatalf("run exit code: got %d want %d", got, want)
+		}
+	})
+
+	if !strings.Contains(output, "tracegap version") {
+		t.Fatalf("expected version output, got %q", output)
+	}
+}
+
+func TestRun_VersionCommand(t *testing.T) {
+	output := captureStdout(t, func() {
+		if got, want := run([]string{"version"}), exitSuccess; got != want {
+			t.Fatalf("run exit code: got %d want %d", got, want)
+		}
+	})
+
+	if !strings.Contains(output, "tracegap version") {
+		t.Fatalf("expected version output, got %q", output)
+	}
+}
+
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+
+	original := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("failed to create pipe: %v", err)
+	}
+	os.Stdout = w
+
+	fn()
+
+	_ = w.Close()
+	os.Stdout = original
+
+	bytes, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("failed to read stdout: %v", err)
+	}
+	_ = r.Close()
+
+	return string(bytes)
 }

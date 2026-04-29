@@ -41,8 +41,10 @@ Supported commands only:
 ```bash
 tgap audit trace.json
 tgap audit trace.json --format json
+tgap --version
 tracegap audit trace.json
 tracegap audit trace.json --format json
+tracegap --version
 ```
 
 No other commands are implemented in v1.
@@ -173,8 +175,10 @@ Nothing to audit. Provide a trace JSON file.
 Usage:
   tgap audit trace.json
   tgap audit trace.json --format json
+   tgap --version
    tracegap audit trace.json
    tracegap audit trace.json --format json
+   tracegap --version
 
 To get started:
    Export a trace as JSON (OTLP/Jaeger) and run:
