@@ -1,0 +1,62 @@
+version: 2
+
+project_name: tracegap
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: tracegap
+    main: ./cmd/tgap
+    binary: tracegap
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - id: tracegap
+    builds:
+      - tracegap
+    formats:
+      - tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE*
+      - README*
+
+checksum:
+  name_template: "checksums.txt"
+
+brews:
+  - name: tracegap
+    homepage: https://tracegap.io
+    description: CLI to find missing execution time in your traces
+    license: MIT
+    repository:
+      owner: TraceGap
+      name: homebrew-tap
+    directory: Formula
+    commit_author:
+      name: tracegap-bot
+      email: bot@tracegap.io
+    install: |
+      bin.install "tracegap"
+      bin.install_symlink "tracegap" => "tgap"
+    test: |
+      system "#{bin}/tracegap", "--help"
+
+release:
+  github:
+    owner: TraceGap
+    name: tracegap
+
+changelog:
+  disable: true
