@@ -13,6 +13,28 @@ The v1 wedge is intentionally narrow and sharp:
 - No auth
 - No config files
 
+## Installation
+
+### Homebrew (macOS)
+
+```bash
+brew tap tracegap/tap
+brew install tracegap
+```
+
+This installs both `tracegap` and the shorter alias `tgap`.
+
+
+--------
+
+## Developer Quick Start
+
+Audit a trace file:
+
+```bash
+tracegap audit path/to/trace.json
+```
+
 ## Install
 
 Build a local binary:
