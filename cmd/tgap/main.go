@@ -26,6 +26,11 @@ func main() {
 }
 
 func run(args []string) int {
+	if isHelpCommand(args) {
+		printHelp(os.Stdout)
+		return exitSuccess
+	}
+
 	if isVersionCommand(args) {
 		printVersion(os.Stdout)
 		return exitSuccess
@@ -122,9 +127,25 @@ func printUsage(w *os.File) {
 	fmt.Fprintln(w, "  tgap audit trace.json")
 	fmt.Fprintln(w, "  tgap audit trace.json --format json")
 	fmt.Fprintln(w, "  tgap --version")
+	fmt.Fprintln(w, "  tgap --help")
 	fmt.Fprintln(w, "  tracegap audit trace.json")
 	fmt.Fprintln(w, "  tracegap audit trace.json --format json")
 	fmt.Fprintln(w, "  tracegap --version")
+	fmt.Fprintln(w, "  tracegap --help")
+}
+
+func printHelp(w *os.File) {
+	fmt.Fprintln(w, "TraceGap CLI")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Commands:")
+	fmt.Fprintln(w, "  audit <trace.json>                 Audit trace coverage (text output)")
+	fmt.Fprintln(w, "  audit <trace.json> --format json   Audit trace coverage (JSON output)")
+	fmt.Fprintln(w, "  --version, -v, version             Print CLI version")
+	fmt.Fprintln(w, "  --help, -h, help                   Show this help")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Executable aliases:")
+	fmt.Fprintln(w, "  tgap")
+	fmt.Fprintln(w, "  tracegap")
 }
 
 func printNoFileHelp(w *os.File) {
@@ -140,6 +161,13 @@ func isVersionCommand(args []string) bool {
 		return false
 	}
 	return args[0] == "--version" || args[0] == "-v" || args[0] == "version"
+}
+
+func isHelpCommand(args []string) bool {
+	if len(args) != 1 {
+		return false
+	}
+	return args[0] == "--help" || args[0] == "-h" || args[0] == "help"
 }
 
 func printVersion(w *os.File) {

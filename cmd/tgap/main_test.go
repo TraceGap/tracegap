@@ -130,6 +130,33 @@ func TestRun_VersionCommand(t *testing.T) {
 	}
 }
 
+func TestRun_HelpFlag(t *testing.T) {
+	output := captureStdout(t, func() {
+		if got, want := run([]string{"--help"}), exitSuccess; got != want {
+			t.Fatalf("run exit code: got %d want %d", got, want)
+		}
+	})
+
+	if !strings.Contains(output, "Commands:") {
+		t.Fatalf("expected commands section in help output, got %q", output)
+	}
+	if !strings.Contains(output, "audit <trace.json>") {
+		t.Fatalf("expected audit description in help output, got %q", output)
+	}
+}
+
+func TestRun_HelpCommand(t *testing.T) {
+	output := captureStdout(t, func() {
+		if got, want := run([]string{"help"}), exitSuccess; got != want {
+			t.Fatalf("run exit code: got %d want %d", got, want)
+		}
+	})
+
+	if !strings.Contains(output, "--help, -h, help") {
+		t.Fatalf("expected help aliases in output, got %q", output)
+	}
+}
+
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
 

@@ -42,9 +42,11 @@ Supported commands only:
 tgap audit trace.json
 tgap audit trace.json --format json
 tgap --version
+tgap --help
 tracegap audit trace.json
 tracegap audit trace.json --format json
 tracegap --version
+tracegap --help
 ```
 
 No other commands are implemented in v1.
@@ -175,15 +177,17 @@ Nothing to audit. Provide a trace JSON file.
 Usage:
   tgap audit trace.json
   tgap audit trace.json --format json
-   tgap --version
-   tracegap audit trace.json
-   tracegap audit trace.json --format json
-   tracegap --version
+  tgap --version
+  tgap --help
+  tracegap audit trace.json
+  tracegap audit trace.json --format json
+  tracegap --version
+  tracegap --help
 
 To get started:
-   Export a trace as JSON (OTLP/Jaeger) and run:
-   tgap audit <trace.json>
-   tracegap audit <trace.json>
+  Export a trace as JSON (OTLP/Jaeger) and run:
+  tgap audit <trace.json>
+  tracegap audit <trace.json>
 ```
 
 ## Development
