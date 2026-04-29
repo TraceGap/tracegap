@@ -1,17 +1,8 @@
 # TraceGap
 
-TraceGap is a local CLI for auditing tracing coverage in a single trace file.
+Find the missing time in your distributed traces.
 
-It answers one question:
-
-How much parent request time is not covered by direct child spans?
-
-The v1 wedge is intentionally narrow and sharp:
-
-- No backend
-- No network calls
-- No auth
-- No config files
+TraceGap is a local CLI that audits a single exported trace and shows how much request time is not explained by child spans.
 
 ## Installation
 
@@ -20,58 +11,34 @@ The v1 wedge is intentionally narrow and sharp:
 ```bash
 brew tap tracegap/tap
 brew install tracegap
+tracegap audit path/to/trace.json
 ```
 
 This installs both `tracegap` and the shorter alias `tgap`.
 
-
---------
-
-## Developer Quick Start
-
-Audit a trace file:
-
-```bash
-tracegap audit path/to/trace.json
-```
-
-## Install
-
-Build a local binary:
-
-```bash
-make build
-```
-
-Binary output:
+## Sample Output
 
 ```text
-dist/tgap
-dist/tracegap -> tgap
+TraceGap Audit
+Schema: OTLP
+Root span: checkout.request (1s)
+⚠️ A significant portion of this request is not traced (50% missing)
+Trace coverage: 50%
+Unaccounted time: 50% (500ms)
+Largest gaps:
+1. 700ms–1s (300ms) after inventory
+2. 200ms–400ms (200ms) between auth and inventory
+checkout.request (1s)
+██████auth██████················███████inventory████████························
+covered: 500ms | gap: 500ms
 ```
 
-You can also run directly with Go:
+## Local-Only By Design
 
-```bash
-go run ./cmd/tgap audit path/to/trace.json
-```
-
-## Command Surface (v1)
-
-Supported commands only:
-
-```bash
-tgap audit trace.json
-tgap audit trace.json --format json
-tgap --version
-tgap --help
-tracegap audit trace.json
-tracegap audit trace.json --format json
-tracegap --version
-tracegap --help
-```
-
-No other commands are implemented in v1.
+- No backend
+- No network calls
+- No auth
+- No config files
 
 ## What It Analyzes
 
@@ -121,48 +88,6 @@ Examples in this repo are aligned to OTLP/JSON conventions:
 - 64-bit timestamps encoded as decimal strings
 
 TraceGap is intentionally tolerant and can parse OTLP-style variants, but canonical OTLP JSON is recommended for sample files.
-
-## Text Output Example
-
-```text
-TraceGap Audit
-Schema: OTLP
-
-Root span: checkout.request (1s)
-⚠️ A significant portion of this request is not traced (50% missing)
-
-Trace coverage: 50%
-Unaccounted time: 50% (500ms)
-
-Largest gaps:
-1. 700ms-1s (300ms) after inventory
-2. 200ms-400ms (200ms) between auth and inventory
-Recommended checks:
-- Add spans around external calls (HTTP, DB, RPC)
-- Ensure trace context propagation (headers/context)
-- Inspect retry/backoff or async logic
-- Check framework/middleware instrumentation
-
-checkout.request (1s)
-================................========================........................
-covered: 500ms | gap: 500ms
-
-Find where this missing time comes from:
-https://tracegap.io
-```
-
-Timeline symbols:
-
-- Unicode mode: covered = █, gap = ·
-- ASCII fallback: covered = =, gap = .
-
-Force ASCII mode:
-
-```bash
-TGAP_ASCII=1 tgap audit trace.json
-# alias command works too
-TGAP_ASCII=1 tracegap audit trace.json
-```
 
 ## JSON Output Example
 
@@ -247,6 +172,35 @@ Targets produced in dist:
 - tgap-windows-amd64.exe
 
 Note: local `make build` also creates `dist/tracegap` as a symlink to `dist/tgap`.
+
+## Developer Quick Start
+
+Build a local binary:
+
+```bash
+make build
+```
+
+You can also run directly with Go:
+
+```bash
+go run ./cmd/tgap audit path/to/trace.json
+```
+
+Supported commands only:
+
+```bash
+tgap audit trace.json
+tgap audit trace.json --format json
+tgap --version
+tgap --help
+tracegap audit trace.json
+tracegap audit trace.json --format json
+tracegap --version
+tracegap --help
+```
+
+No other commands are implemented in v1.
 
 ## Notes
 
