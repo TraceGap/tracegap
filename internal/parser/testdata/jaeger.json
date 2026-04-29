@@ -1,0 +1,40 @@
+{
+  "data": [
+    {
+      "traceID": "5b8efff798038103d269b633813fc60c",
+      "spans": [
+        {
+          "spanID": "eee19b7ec3c1b173",
+          "operationName": "checkout.request",
+          "startTime": 1544712660000000,
+          "duration": 1000000,
+          "references": []
+        },
+        {
+          "spanID": "eee19b7ec3c1b174",
+          "operationName": "auth",
+          "startTime": 1544712660000000,
+          "duration": 200000,
+          "references": [
+            {
+              "refType": "CHILD_OF",
+              "spanID": "eee19b7ec3c1b173"
+            }
+          ]
+        },
+        {
+          "spanID": "eee19b7ec3c1b175",
+          "operationName": "inventory",
+          "startTime": 1544712660400000,
+          "duration": 300000,
+          "references": [
+            {
+              "refType": "CHILD_OF",
+              "spanID": "eee19b7ec3c1b173"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

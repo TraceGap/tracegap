@@ -1,0 +1,28 @@
+{
+  "data": [
+    {
+      "traceID": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "spans": [
+        {
+          "spanID": "bbbbbbbbbbbbbbbb",
+          "operationName": "checkout.request",
+          "startTime": 1544712660000000,
+          "duration": 1000000,
+          "references": []
+        },
+        {
+          "spanID": "cccccccccccccccc",
+          "operationName": "inventory",
+          "startTime": 1544712660400000,
+          "duration": 300000,
+          "references": [
+            {
+              "refType": "CHILD_OF",
+              "spanID": "bbbbbbbbbbbbbbbb"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

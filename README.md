@@ -64,21 +64,62 @@ Given a trace JSON file (OpenTelemetry-style or similar), TraceGap:
 6. Renders a timeline bar per root span.
 7. Prints probabilistic remediation guidance.
 
+## Supported Import Schemas
+
+TraceGap auto-detects and parses these trace JSON schema families:
+
+- OTLP JSON
+- Jaeger JSON
+- Datadog trace JSON
+- Grafana-compatible exports that are OTLP-shaped or Jaeger-shaped
+
+On successful parse, output includes the detected schema.
+
+Example:
+
+```text
+TraceGap Audit
+Schema: OTLP
+```
+
+## OTLP JSON Alignment
+
+Examples in this repo are aligned to OTLP/JSON conventions:
+
+- lowerCamelCase field names (for example resourceSpans, scopeSpans, startTimeUnixNano)
+- traceId as 32 hex chars
+- spanId and parentSpanId as 16 hex chars
+- 64-bit timestamps encoded as decimal strings
+
+TraceGap is intentionally tolerant and can parse OTLP-style variants, but canonical OTLP JSON is recommended for sample files.
+
 ## Text Output Example
 
 ```text
 TraceGap Audit
+Schema: OTLP
 
-Trace coverage: 62%
-Unaccounted time: 38% (812ms)
+Root span: checkout.request (1s)
+⚠️ A significant portion of this request is not traced (50% missing)
+
+Trace coverage: 50%
+Unaccounted time: 50% (500ms)
 
 Largest gaps:
-1. 250ms-400ms (150ms)
-2. 900ms-1000ms (100ms)
+1. 700ms-1s (300ms) after inventory
+2. 200ms-400ms (200ms) between auth and inventory
+Recommended checks:
+- Add spans around external calls (HTTP, DB, RPC)
+- Ensure trace context propagation (headers/context)
+- Inspect retry/backoff or async logic
+- Check framework/middleware instrumentation
 
-checkout.request (1000ms)
-████████············████████████······████
-covered: 620ms | gap: 380ms
+checkout.request (1s)
+================................========================........................
+covered: 500ms | gap: 500ms
+
+Find where this missing time comes from:
+https://tracegap.io
 ```
 
 Timeline symbols:
@@ -125,6 +166,10 @@ Nothing to audit. Provide a trace JSON file.
 Usage:
   tgap audit trace.json
   tgap audit trace.json --format json
+
+To get started:
+   Export a trace as JSON (OTLP/Jaeger) and run:
+   tgap audit <trace.json>
 ```
 
 ## Development

@@ -1,0 +1,8 @@
+{
+  "hello": "world",
+  "spans": [
+    {
+      "name": "not-a-supported-schema"
+    }
+  ]
+}

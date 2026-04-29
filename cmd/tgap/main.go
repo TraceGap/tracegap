@@ -34,10 +34,11 @@ func run(args []string) int {
 	if traceFile == "" {
 		fmt.Fprintln(os.Stderr, "Nothing to audit. Provide a trace JSON file.")
 		printUsage(os.Stderr)
+		printNoFileHelp(os.Stderr)
 		return exitInvalidInput
 	}
 
-	spans, err := parser.ParseFile(traceFile)
+	spans, schema, err := parser.ParseFile(traceFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to audit trace file: %v\n", err)
 		return exitRuntimeError
@@ -49,6 +50,7 @@ func run(args []string) int {
 	}
 
 	analysis := analyzer.Analyze(spans, analyzer.DefaultTimelineWidth)
+	analysis.DetectedSchema = string(schema)
 	switch format {
 	case output.FormatText:
 		output.PrintAuditText(os.Stdout, analysis)
@@ -112,4 +114,11 @@ func printUsage(w *os.File) {
 	fmt.Fprintln(w, "Usage:")
 	fmt.Fprintln(w, "  tgap audit trace.json")
 	fmt.Fprintln(w, "  tgap audit trace.json --format json")
+}
+
+func printNoFileHelp(w *os.File) {
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "To get started:")
+	fmt.Fprintln(w, "  Export a trace as JSON (OTLP/Jaeger) and run:")
+	fmt.Fprintln(w, "  tgap audit <trace.json>")
 }

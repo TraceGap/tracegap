@@ -36,7 +36,12 @@ func PrintAuditText(w io.Writer, result analyzer.AuditResult) {
 	gapPct := 100 - coveragePct
 
 	fmt.Fprintln(w, "TraceGap Audit")
+	if result.DetectedSchema != "" {
+		fmt.Fprintf(w, "Schema: %s\n", formatSchema(result.DetectedSchema))
+	}
 	fmt.Fprintln(w)
+	fmt.Fprintf(w, "Root span: %s (%s)\n", primary.RootSpan.Name, formatDuration(primary.RootDuration))
+	fmt.Fprintln(w, severityMessage(gapPct))
 	fmt.Fprintf(w, "Trace coverage: %d%%\n", coveragePct)
 	fmt.Fprintf(w, "Unaccounted time: %d%% (%s)\n", gapPct, formatDuration(primary.GapDuration))
 	if primary.AggregateOnly {
@@ -50,13 +55,14 @@ func PrintAuditText(w io.Writer, result analyzer.AuditResult) {
 		fmt.Fprintln(w, "No significant gaps found.")
 	} else {
 		for i, gap := range primary.LargestGaps {
+			context := describeGapContext(gap, *primary)
 			if primary.PositionalAvailable {
-				fmt.Fprintf(w, "%d. %s-%s (%s)\n", i+1, formatDuration(gap.StartOffset), formatDuration(gap.EndOffset), formatDuration(gap.Duration))
+				fmt.Fprintf(w, "%d. %s-%s (%s)%s\n", i+1, formatDuration(gap.StartOffset), formatDuration(gap.EndOffset), formatDuration(gap.Duration), context)
 			} else {
 				fmt.Fprintf(w, "%d. %s (aggregate-only)\n", i+1, formatDuration(gap.Duration))
 			}
-			printGuidance(w, *primary)
 		}
+		printRecommendedChecks(w, *primary)
 	}
 
 	for _, root := range result.Roots {
@@ -73,16 +79,30 @@ func PrintAuditText(w io.Writer, result analyzer.AuditResult) {
 		}
 	}
 
-	if gapPct >= 30 {
-		fmt.Fprintln(w)
-		fmt.Fprintln(w, "Your tracing likely does not cover a significant portion of request time.")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Find where this missing time comes from:")
+	fmt.Fprintln(w, "https://tracegap.io")
+
+}
+
+func severityMessage(missingPct int) string {
+	switch {
+	case missingPct > 50:
+		return fmt.Sprintf("🚨 Your tracing misses over half of this request's execution time (%d%% missing)", missingPct)
+	case missingPct > 25:
+		return fmt.Sprintf("⚠️ A significant portion of this request is not traced (%d%% missing)", missingPct)
+	case missingPct > 10:
+		return fmt.Sprintf("ℹ️ Some parts of this request are not traced (%d%% missing)", missingPct)
+	default:
+		return fmt.Sprintf("✅ Most of this request is traced (only %d%% missing)", missingPct)
 	}
 }
 
 func PrintAuditJSON(w io.Writer, result analyzer.AuditResult, sourceFile string) error {
 	payload := map[string]any{
-		"file":          sourceFile,
-		"rootsAnalyzed": len(result.Roots),
+		"file":           sourceFile,
+		"rootsAnalyzed":  len(result.Roots),
+		"detectedSchema": result.DetectedSchema,
 	}
 
 	if result.PrimaryRoot != nil {
@@ -141,15 +161,60 @@ func gapsToJSON(gaps []analyzer.Gap, positional bool) []map[string]any {
 	return out
 }
 
-func printGuidance(w io.Writer, root analyzer.RootResult) {
-	fmt.Fprintln(w, "   Likely causes:")
-	for _, c := range root.LikelyCauses {
-		fmt.Fprintf(w, "   - %s\n", c)
+func printRecommendedChecks(w io.Writer, root analyzer.RootResult) {
+	fmt.Fprintln(w, "Recommended checks:")
+	for _, rc := range root.RecommendedChecks {
+		fmt.Fprintf(w, "- %s\n", rc)
 	}
-	fmt.Fprintln(w, "   Recommended checks:")
-	for i, rc := range root.RecommendedChecks {
-		fmt.Fprintf(w, "   %d. %s\n", i+1, rc)
+}
+
+func describeGapContext(gap analyzer.Gap, root analyzer.RootResult) string {
+	if !root.PositionalAvailable || len(root.MergedIntervals) == 0 {
+		return ""
 	}
+
+	var prev *analyzer.Interval
+	var next *analyzer.Interval
+	for i := range root.MergedIntervals {
+		in := &root.MergedIntervals[i]
+		if in.EndOffset <= gap.StartOffset {
+			prev = in
+		}
+		if next == nil && in.StartOffset >= gap.EndOffset {
+			next = in
+		}
+	}
+
+	prevName := ""
+	nextName := ""
+	if prev != nil {
+		prevName = strings.TrimSpace(prev.SpanName)
+	}
+	if next != nil {
+		nextName = strings.TrimSpace(next.SpanName)
+	}
+
+	switch {
+	case gap.Kind == "after_last" && prevName != "":
+		return " after " + prevName
+	case gap.Kind == "before_first" && nextName != "":
+		return " before " + nextName
+	case prevName != "" && nextName != "":
+		return " between " + prevName + " and " + nextName
+	case prevName != "":
+		return " after " + prevName
+	case nextName != "":
+		return " before " + nextName
+	default:
+		return ""
+	}
+}
+
+func formatSchema(schema string) string {
+	if strings.TrimSpace(schema) == "" {
+		return ""
+	}
+	return strings.ToUpper(schema)
 }
 
 func renderTimeline(t analyzer.TimelineData) string {

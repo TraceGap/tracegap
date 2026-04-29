@@ -1,0 +1,27 @@
+{
+  "resourceSpans": [
+    {
+      "scopeSpans": [
+        {
+          "spans": [
+            {
+              "traceId": "5B8EFFF798038103D269B633813FC60C",
+              "spanId": "AAA19B7EC3C1B173",
+              "name": "checkout.request",
+              "startTimeUnixNano": "1544712660000000000",
+              "endTimeUnixNano": "1544712661000000000"
+            },
+            {
+              "traceId": "5B8EFFF798038103D269B633813FC60C",
+              "spanId": "AAA19B7EC3C1B174",
+              "parentSpanId": "AAA19B7EC3C1B173",
+              "name": "auth",
+              "startTimeUnixNano": "1544712660000000000",
+              "endTimeUnixNano": "1544712660200000000"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

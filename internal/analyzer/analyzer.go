@@ -68,8 +68,9 @@ type RootResult struct {
 }
 
 type AuditResult struct {
-	Roots       []RootResult
-	PrimaryRoot *RootResult
+	DetectedSchema string
+	Roots          []RootResult
+	PrimaryRoot    *RootResult
 }
 
 func Analyze(spans []parser.Span, width int) AuditResult {

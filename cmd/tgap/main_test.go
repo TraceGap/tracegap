@@ -77,3 +77,29 @@ func TestRun_InvalidJSONExitCode1(t *testing.T) {
 		t.Fatalf("run exit code: got %d want %d", got, want)
 	}
 }
+
+func TestRun_SupportedSchemaFixtures(t *testing.T) {
+	fixtures := []string{
+		filepath.Join("..", "..", "internal", "parser", "testdata", "trace.json"),
+		filepath.Join("..", "..", "internal", "parser", "testdata", "jaeger.json"),
+		filepath.Join("..", "..", "internal", "parser", "testdata", "datadog.json"),
+		filepath.Join("..", "..", "internal", "parser", "testdata", "grafana_otlp.json"),
+		filepath.Join("..", "..", "internal", "parser", "testdata", "grafana_jaeger.json"),
+	}
+
+	for _, fixture := range fixtures {
+		fixture := fixture
+		t.Run(fixture, func(t *testing.T) {
+			if got, want := run([]string{"audit", fixture}), exitSuccess; got != want {
+				t.Fatalf("run exit code for %s: got %d want %d", fixture, got, want)
+			}
+		})
+	}
+}
+
+func TestRun_UnknownSchemaExitCode1(t *testing.T) {
+	fixture := filepath.Join("..", "..", "internal", "parser", "testdata", "unknown.json")
+	if got, want := run([]string{"audit", fixture}), exitRuntimeError; got != want {
+		t.Fatalf("run exit code: got %d want %d", got, want)
+	}
+}

@@ -9,7 +9,7 @@ LDFLAGS := -s -w
 .PHONY: test benchmark lint build build-local clean cross-build darwin-amd64 darwin-arm64 linux-amd64 linux-arm64 windows-amd64
 
 test:
-	$(GO) test ./...
+	$(GO) test -count=1 ./...
 
 benchmark:
 	$(GO) test ./internal/analyzer -bench=. -benchmem

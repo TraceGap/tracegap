@@ -1,0 +1,31 @@
+{
+  "traces": [
+    [
+      {
+        "trace_id": "1234567890123456789",
+        "span_id": "111",
+        "parent_id": "0",
+        "name": "checkout.request",
+        "resource": "GET /checkout",
+        "start": 1544712660000000000,
+        "duration": 1000000000
+      },
+      {
+        "trace_id": "1234567890123456789",
+        "span_id": "112",
+        "parent_id": "111",
+        "name": "auth",
+        "start": 1544712660000000000,
+        "duration": 200000000
+      },
+      {
+        "trace_id": "1234567890123456789",
+        "span_id": "113",
+        "parent_id": "111",
+        "name": "inventory",
+        "start": 1544712660400000000,
+        "duration": 300000000
+      }
+    ]
+  ]
+}

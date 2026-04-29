@@ -3,6 +3,7 @@ package output
 import (
 	"bytes"
 	"encoding/json"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,6 +28,7 @@ func TestRenderTimeline_ASCIIFallback(t *testing.T) {
 
 func TestPrintAuditJSON_EmitsSummary(t *testing.T) {
 	result := analyzer.AuditResult{
+		DetectedSchema: "otlp",
 		Roots: []analyzer.RootResult{
 			{
 				RootSpan:        parser.Span{ID: "r1", Name: "root"},
@@ -51,6 +53,9 @@ func TestPrintAuditJSON_EmitsSummary(t *testing.T) {
 	}
 	if got, want := payload["file"], "trace.json"; got != want {
 		t.Fatalf("file field: got %v want %v", got, want)
+	}
+	if got, want := payload["detectedSchema"], "otlp"; got != want {
+		t.Fatalf("detectedSchema: got %v want %v", got, want)
 	}
 	summary, ok := payload["summary"].(map[string]any)
 	if !ok {
@@ -84,6 +89,7 @@ func TestSupportsUnicode_ForcedAscii(t *testing.T) {
 func TestPrintAuditText_Golden(t *testing.T) {
 	t.Setenv("TGAP_ASCII", "1")
 	result := analyzer.AuditResult{
+		DetectedSchema: "otlp",
 		Roots: []analyzer.RootResult{
 			{
 				RootSpan:            parser.Span{ID: "root1", Name: "checkout.request"},
@@ -92,6 +98,10 @@ func TestPrintAuditText_Golden(t *testing.T) {
 				GapDuration:         500 * time.Millisecond,
 				CoverageRatio:       0.5,
 				PositionalAvailable: true,
+				MergedIntervals: []analyzer.Interval{
+					{StartOffset: 0, EndOffset: 200 * time.Millisecond, SpanName: "auth"},
+					{StartOffset: 400 * time.Millisecond, EndOffset: 700 * time.Millisecond, SpanName: "inventory"},
+				},
 				LargestGaps: []analyzer.Gap{
 					{StartOffset: 700 * time.Millisecond, EndOffset: time.Second, Duration: 300 * time.Millisecond, Kind: "after_last"},
 					{StartOffset: 200 * time.Millisecond, EndOffset: 400 * time.Millisecond, Duration: 200 * time.Millisecond, Kind: "between"},
@@ -129,6 +139,68 @@ func TestPrintAuditText_Golden(t *testing.T) {
 	if got != want {
 		t.Fatalf("golden mismatch\n--- got ---\n%s\n--- want ---\n%s", got, want)
 	}
+}
+
+func TestPrintAuditText_SeverityFixtures(t *testing.T) {
+	t.Setenv("TGAP_ASCII", "1")
+	tests := []struct {
+		name         string
+		coveragePct  int
+		goldenFile   string
+	}{
+		{name: "over-50", coveragePct: 40, goldenFile: "severity_over_50.golden"},
+		{name: "25-to-50", coveragePct: 50, goldenFile: "severity_25_to_50.golden"},
+		{name: "10-to-25", coveragePct: 80, goldenFile: "severity_10_to_25.golden"},
+		{name: "10-or-less", coveragePct: 95, goldenFile: "severity_10_or_less.golden"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := severityFixtureAuditResult(tt.coveragePct)
+			var buf bytes.Buffer
+			PrintAuditText(&buf, result)
+
+			goldenPath := filepath.Join("testdata", tt.goldenFile)
+			wantBytes, err := os.ReadFile(goldenPath)
+			if err != nil {
+				t.Fatalf("failed to read golden file: %v", err)
+			}
+			want := string(wantBytes)
+			got := buf.String()
+			if got != want {
+				t.Fatalf("golden mismatch\n--- got ---\n%s\n--- want ---\n%s", got, want)
+			}
+		})
+	}
+}
+
+func severityFixtureAuditResult(coveragePct int) analyzer.AuditResult {
+	rootDuration := time.Second
+	covered := time.Duration(coveragePct) * 10 * time.Millisecond
+	gap := rootDuration - covered
+	coveredCols := int(math.Round(float64(coveragePct) / 5.0))
+	if coveredCols < 0 {
+		coveredCols = 0
+	}
+	if coveredCols > 20 {
+		coveredCols = 20
+	}
+
+	result := analyzer.AuditResult{
+		DetectedSchema: "otlp",
+		Roots: []analyzer.RootResult{
+			{
+				RootSpan:      parser.Span{ID: "root1", Name: "checkout.request"},
+				RootDuration:  rootDuration,
+				CoveredDuration: covered,
+				GapDuration:   gap,
+				CoverageRatio: float64(coveragePct) / 100.0,
+				Timeline: analyzer.TimelineData{Width: 20, Mask: buildMask(20, [][2]int{{0, coveredCols}})},
+			},
+		},
+	}
+	result.PrimaryRoot = &result.Roots[0]
+	return result
 }
 
 func buildMask(width int, covered [][2]int) []bool {

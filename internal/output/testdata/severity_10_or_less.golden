@@ -1,0 +1,17 @@
+TraceGap Audit
+Schema: OTLP
+
+Root span: checkout.request (1s)
+✅ Most of this request is traced (only 5% missing)
+Trace coverage: 95%
+Unaccounted time: 5% (50ms)
+
+Largest gaps:
+No significant gaps found.
+
+checkout.request (1s)
+===================.
+covered: 950ms | gap: 50ms
+
+Find where this missing time comes from:
+https://tracegap.io
