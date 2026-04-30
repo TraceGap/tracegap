@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"tracegap/internal/analyzer"
+	"tracegap/internal/repoanalysis"
 )
 
 type Format string
@@ -83,6 +84,47 @@ func PrintAuditText(w io.Writer, result analyzer.AuditResult) {
 	fmt.Fprintln(w, "Find where this missing time comes from:")
 	fmt.Fprintln(w, "https://tracegap.io")
 
+}
+
+func PrintRepoAnalysisText(w io.Writer, result *repoanalysis.Result) {
+	if result == nil || !result.Enabled {
+		return
+	}
+
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Repo Analysis")
+
+	if result.MatchedRoot != nil {
+		fmt.Fprintf(w, "Matched root span: %s:%d\n", result.MatchedRoot.FilePath, result.MatchedRoot.Line)
+		fmt.Fprintf(w, "Function: %s\n", result.MatchedRoot.Function)
+		fmt.Fprintf(w, "Confidence: %s\n", string(result.MatchedRoot.Confidence))
+	}
+
+	if result.WeakSignal && strings.TrimSpace(result.WeakSignalMessage) != "" {
+		fmt.Fprintln(w, result.WeakSignalMessage)
+	}
+
+	if result.Mode == "error-context" {
+		fmt.Fprintln(w, "Most suspicious uninstrumented code paths:")
+	} else {
+		fmt.Fprintln(w, "Likely instrumentation opportunities:")
+	}
+
+	if len(result.Candidates) == 0 {
+		fmt.Fprintln(w, "No confident candidates found.")
+		return
+	}
+
+	for i, cand := range result.Candidates {
+		fmt.Fprintf(w, "%d. %s:%d\n", i+1, cand.FilePath, cand.Line)
+		fmt.Fprintf(w, "   Function: %s\n", cand.Function)
+		fmt.Fprintf(w, "   Confidence: %s\n", string(cand.Confidence))
+		fmt.Fprintln(w, "   Why:")
+		for _, why := range cand.Why {
+			fmt.Fprintf(w, "   - %s\n", why)
+		}
+		fmt.Fprintf(w, "   Start here: %s\n", cand.StartHere)
+	}
 }
 
 func severityMessage(missingPct int) string {

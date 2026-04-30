@@ -27,8 +27,8 @@ const (
 	weightFileOverlap      = 1.5
 	weightHandlerPattern   = 1.2
 	weightPackageOverlap   = 1.0
-	thresholdHighConfidence = 4.2
-	thresholdMediumConfidence = 2.8
+	thresholdHighConfidence   = 3.8
+	thresholdMediumConfidence = 1.8
 )
 
 func MatchRootSpan(rootSpanName string, graph *codegraph.Graph) EntryMatch {

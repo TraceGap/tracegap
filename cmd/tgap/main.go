@@ -10,6 +10,7 @@ import (
 	"tracegap/internal/analyzer"
 	"tracegap/internal/output"
 	"tracegap/internal/parser"
+	"tracegap/internal/repoanalysis"
 )
 
 const (
@@ -63,10 +64,18 @@ func run(args []string) int {
 
 	analysis := analyzer.Analyze(spans, analyzer.DefaultTimelineWidth)
 	analysis.DetectedSchema = string(schema)
-	_ = repoPath
+
+	var repoResult *repoanalysis.Result
+	if format == output.FormatText && strings.TrimSpace(repoPath) != "" {
+		repoResult, err = repoanalysis.Analyze(repoPath, analysis, spans)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: repo analysis skipped: %v\n", err)
+		}
+	}
 	switch format {
 	case output.FormatText:
 		output.PrintAuditText(os.Stdout, analysis)
+		output.PrintRepoAnalysisText(os.Stdout, repoResult)
 	case output.FormatJSON:
 		if err := output.PrintAuditJSON(os.Stdout, analysis, traceFile); err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to render output: %v\n", err)

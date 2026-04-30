@@ -12,6 +12,7 @@ import (
 
 	"tracegap/internal/analyzer"
 	"tracegap/internal/parser"
+	"tracegap/internal/repoanalysis"
 )
 
 func TestRenderTimeline_ASCIIFallback(t *testing.T) {
@@ -219,4 +220,70 @@ func buildMask(width int, covered [][2]int) []bool {
 		}
 	}
 	return mask
+}
+
+func TestPrintRepoAnalysisText_RendersCandidates(t *testing.T) {
+	result := &repoanalysis.Result{
+		Enabled: true,
+		Mode:    "error-context",
+		MatchedRoot: &repoanalysis.MatchedRoot{
+			FilePath:   "internal/checkout/handler.go",
+			Line:       31,
+			Function:   "checkout.SubmitOrderHandler",
+			Confidence: repoanalysis.ConfidenceMedium,
+		},
+		Candidates: []repoanalysis.Candidate{
+			{
+				FilePath:   "internal/payment/client.go",
+				Line:       42,
+				Function:   "payment.(*PaymentClient).Charge",
+				Confidence: repoanalysis.ConfidenceHigh,
+				Why: []string{
+					"On a reachable path from matched entrypoint",
+					"No span detected in function body",
+				},
+				StartHere: "Add or verify instrumentation around Charge()",
+			},
+		},
+	}
+
+	var buf bytes.Buffer
+	PrintRepoAnalysisText(&buf, result)
+	out := buf.String()
+
+	checks := []string{
+		"Repo Analysis",
+		"Matched root span: internal/checkout/handler.go:31",
+		"Most suspicious uninstrumented code paths:",
+		"internal/payment/client.go:42",
+		"Confidence: high",
+		"Start here: Add or verify instrumentation around Charge()",
+	}
+	for _, want := range checks {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected output to contain %q, got %q", want, out)
+		}
+	}
+}
+
+func TestPrintRepoAnalysisText_WeakSignalAndNoCandidates(t *testing.T) {
+	result := &repoanalysis.Result{
+		Enabled:           true,
+		Mode:              "instrumentation-opportunity",
+		WeakSignal:        true,
+		WeakSignalMessage: "Weak signal: no confident root entrypoint match found, so reachable-path claims are intentionally omitted.",
+	}
+
+	var buf bytes.Buffer
+	PrintRepoAnalysisText(&buf, result)
+	out := buf.String()
+	if !strings.Contains(out, "Likely instrumentation opportunities:") {
+		t.Fatalf("expected instrumentation header, got %q", out)
+	}
+	if !strings.Contains(out, "Weak signal:") {
+		t.Fatalf("expected weak signal message, got %q", out)
+	}
+	if !strings.Contains(out, "No confident candidates found.") {
+		t.Fatalf("expected no candidates message, got %q", out)
+	}
 }
