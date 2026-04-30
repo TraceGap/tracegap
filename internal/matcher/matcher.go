@@ -23,32 +23,45 @@ type EntryMatch struct {
 }
 
 const (
-	weightNameOverlap      = 2.0
-	weightFileOverlap      = 1.5
-	weightHandlerPattern   = 1.2
-	weightPackageOverlap   = 1.0
-	thresholdHighConfidence   = 3.8
-	thresholdMediumConfidence = 1.8
+	weightRootNameOverlap       = 3.2
+	weightRootFileOverlap       = 2.0
+	weightRootPackageOverlap    = 1.8
+	weightHandlerPattern        = 2.0
+	weightHTTPHandlerSignature  = 2.4
+	penaltyChildSemanticOverlap = 2.4
+	penaltyDownstreamSemantic   = 1.8
+	penaltyExternalHeavyRoot    = 1.0
+
+	thresholdHighConfidence   = 5.2
+	thresholdMediumConfidence = 3.2
+	minimumEntrypointScore    = 2.4
+	minimumConfidenceMargin   = 0.8
 )
 
-func MatchRootSpan(rootSpanName string, graph *codegraph.Graph) EntryMatch {
+func MatchRootSpan(rootSpanName string, childSpanNames []string, graph *codegraph.Graph) EntryMatch {
 	best := EntryMatch{Confidence: ConfidenceLow}
+	secondBest := EntryMatch{Confidence: ConfidenceLow}
 	rootTokens := tokenize(rootSpanName)
+	childTokens := tokenize(strings.Join(childSpanNames, " "))
 
 	for id, fn := range graph.Functions {
 		score := 0.0
-		reasons := make([]string, 0, 4)
+		reasons := make([]string, 0, 8)
 
-		nameOverlap := overlapScore(rootTokens, tokenize(fn.FuncName))
+		fnNameTokens := tokenize(fn.FuncName)
+		fnFileTokens := tokenize(fileBaseToken(fn.FilePath))
+		fnPkgTokens := tokenize(fn.Package)
+		allFnTokens := tokenize(fn.FuncName + " " + fn.FilePath + " " + fn.Package)
+
+		nameOverlap := overlapScore(rootTokens, fnNameTokens)
 		if nameOverlap > 0 {
-			score += weightNameOverlap * nameOverlap
+			score += weightRootNameOverlap * nameOverlap
 			reasons = append(reasons, "function name overlaps root span")
 		}
 
-		fileBase := fileBaseToken(fn.FilePath)
-		fileOverlap := overlapScore(rootTokens, tokenize(fileBase))
+		fileOverlap := overlapScore(rootTokens, fnFileTokens)
 		if fileOverlap > 0 {
-			score += weightFileOverlap * fileOverlap
+			score += weightRootFileOverlap * fileOverlap
 			reasons = append(reasons, "file name aligns with root span")
 		}
 
@@ -56,17 +69,49 @@ func MatchRootSpan(rootSpanName string, graph *codegraph.Graph) EntryMatch {
 			score += weightHandlerPattern
 			reasons = append(reasons, "handler-like entrypoint naming")
 		}
+		if fn.IsHTTPHandler {
+			score += weightHTTPHandlerSignature
+			reasons = append(reasons, "HTTP handler signature")
+		}
 
-		pkgOverlap := overlapScore(rootTokens, tokenize(fn.Package))
+		pkgOverlap := overlapScore(rootTokens, fnPkgTokens)
 		if pkgOverlap > 0 {
-			score += weightPackageOverlap * pkgOverlap
+			score += weightRootPackageOverlap * pkgOverlap
 			reasons = append(reasons, "package semantics align with root span")
+		}
+
+		childOverlap := overlapScore(childTokens, allFnTokens)
+		if childOverlap > 0 {
+			score -= penaltyChildSemanticOverlap * childOverlap
+			reasons = append(reasons, "penalized for stronger child-span semantics")
+		}
+
+		downstream := downstreamPenalty(fn)
+		if downstream > 0 {
+			score -= penaltyDownstreamSemantic * downstream
+			reasons = append(reasons, "penalized for downstream/client/repository semantics")
+		}
+
+		if fn.ExternalOps.Count > 0 {
+			score -= penaltyExternalHeavyRoot
+			reasons = append(reasons, "penalized for primarily external-operation profile")
 		}
 
 		cand := EntryMatch{FunctionID: id, Score: score, Reasons: reasons, Confidence: confidenceForScore(score)}
 		if cand.Score > best.Score {
+			secondBest = best
 			best = cand
+		} else if cand.Score > secondBest.Score {
+			secondBest = cand
 		}
+	}
+
+	if best.Score < minimumEntrypointScore {
+		best.Confidence = ConfidenceLow
+		return best
+	}
+	if best.Score-secondBest.Score < minimumConfidenceMargin {
+		best.Confidence = ConfidenceLow
 	}
 
 	return best
@@ -139,6 +184,35 @@ func overlapScore(a, b []string) float64 {
 func hasHandlerPattern(name string) bool {
 	n := strings.ToLower(strings.TrimSpace(name))
 	return strings.Contains(n, "handler") || strings.Contains(n, "handle") || strings.Contains(n, "controller") || strings.Contains(n, "servehttp")
+}
+
+func downstreamPenalty(fn *codegraph.FunctionNode) float64 {
+	tokens := tokenize(fn.FuncName + " " + fn.FilePath + " " + fn.Package)
+	if len(tokens) == 0 {
+		return 0
+	}
+	downstreamWords := map[string]struct{}{
+		"client": {}, "repository": {}, "repo": {}, "gateway": {}, "storage": {}, "store": {}, "dao": {}, "adapter": {},
+		"reserve": {}, "charge": {}, "save": {}, "execute": {}, "call": {}, "query": {}, "publish": {}, "send": {},
+	}
+	matches := 0.0
+	for _, tok := range tokens {
+		if _, ok := downstreamWords[tok]; ok {
+			matches++
+		}
+	}
+	if matches == 0 {
+		return 0
+	}
+	den := float64(len(tokens))
+	if den <= 0 {
+		return 0
+	}
+	v := matches / den
+	if v > 1 {
+		return 1
+	}
+	return v
 }
 
 func fileBaseToken(path string) string {

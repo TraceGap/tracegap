@@ -99,6 +99,7 @@ func BuildGraph(repoPath string, opts Options) (*codegraph.Graph, error) {
 			}
 			calls, startsSpan, externalOps, handlesErr := analyzeBody(fnDecl, imports)
 			node.StartsSpan = startsSpan
+			node.IsHTTPHandler = isHTTPHandlerSignature(fnDecl, imports)
 			node.ExternalOps = externalOps
 			node.HandlesError = handlesErr
 			pending = append(pending, pendingNode{node: node, pkg: parsed.Name.Name, rawCalls: calls, importPkgs: imports})
@@ -227,6 +228,60 @@ func importAliases(imports []*ast.ImportSpec) map[string]string {
 		out[alias] = path
 	}
 	return out
+}
+
+func isHTTPHandlerSignature(fn *ast.FuncDecl, imports map[string]string) bool {
+	if fn == nil || fn.Type == nil || fn.Type.Params == nil {
+		return false
+	}
+	hasWriter := false
+	hasRequest := false
+	for _, field := range fn.Type.Params.List {
+		if field == nil || field.Type == nil {
+			continue
+		}
+		if isResponseWriterType(field.Type, imports) {
+			hasWriter = true
+		}
+		if isRequestPointerType(field.Type, imports) {
+			hasRequest = true
+		}
+	}
+	return hasWriter && hasRequest
+}
+
+func isResponseWriterType(expr ast.Expr, imports map[string]string) bool {
+	sel, ok := expr.(*ast.SelectorExpr)
+	if !ok || sel.Sel == nil || sel.Sel.Name != "ResponseWriter" {
+		return false
+	}
+	ident, ok := sel.X.(*ast.Ident)
+	if !ok {
+		return false
+	}
+	if ident.Name == "http" {
+		return true
+	}
+	return imports[ident.Name] == "net/http"
+}
+
+func isRequestPointerType(expr ast.Expr, imports map[string]string) bool {
+	star, ok := expr.(*ast.StarExpr)
+	if !ok {
+		return false
+	}
+	sel, ok := star.X.(*ast.SelectorExpr)
+	if !ok || sel.Sel == nil || sel.Sel.Name != "Request" {
+		return false
+	}
+	ident, ok := sel.X.(*ast.Ident)
+	if !ok {
+		return false
+	}
+	if ident.Name == "http" {
+		return true
+	}
+	return imports[ident.Name] == "net/http"
 }
 
 func analyzeBody(fn *ast.FuncDecl, imports map[string]string) ([]rawCall, bool, codegraph.ExternalSignals, bool) {

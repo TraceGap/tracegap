@@ -199,6 +199,66 @@ func TestAnalyze_CheckoutFixture_ErrorAndSuccessModes(t *testing.T) {
 	}
 }
 
+func TestAnalyze_DoesNotFavorChildSpanSemanticCandidate(t *testing.T) {
+	repo := t.TempDir()
+	mustWrite(t, filepath.Join(repo, "go.mod"), "module example.com/x\n")
+	mustWrite(t, filepath.Join(repo, "internal", "checkout", "handler.go"), `package checkout
+
+import (
+	"context"
+	"example.com/x/internal/inventory"
+	"example.com/x/internal/payment"
+)
+
+func CheckoutHandler(ctx context.Context) error {
+	if err := inventory.Reserve(ctx); err != nil {
+		return err
+	}
+	return payment.Charge(ctx)
+}
+`)
+	mustWrite(t, filepath.Join(repo, "internal", "inventory", "service.go"), `package inventory
+
+import "context"
+
+func Reserve(ctx context.Context) error {
+	return nil
+}
+`)
+	mustWrite(t, filepath.Join(repo, "internal", "payment", "client.go"), `package payment
+
+import (
+	"context"
+	"net/http"
+)
+
+func Charge(ctx context.Context) error {
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://payments.local/charge", nil)
+	_, err := http.DefaultClient.Do(req)
+	return err
+}
+`)
+
+	base := time.Unix(0, 0)
+	spans := []parser.Span{
+		{ID: "root", Name: "checkout.request", Start: base, End: base.Add(time.Second), HasStart: true, HasEnd: true},
+		{ID: "c1", ParentID: "root", Name: "inventory", Start: base, End: base.Add(200 * time.Millisecond), HasStart: true, HasEnd: true},
+		{ID: "c2", ParentID: "root", Name: "auth", Start: base.Add(400 * time.Millisecond), End: base.Add(700 * time.Millisecond), HasStart: true, HasEnd: true},
+	}
+	audit := analyzer.Analyze(spans, analyzer.DefaultTimelineWidth)
+
+	res, err := Analyze(repo, audit, spans)
+	if err != nil {
+		t.Fatalf("Analyze failed: %v", err)
+	}
+	if len(res.Candidates) == 0 {
+		t.Fatalf("expected candidates")
+	}
+	if !strings.Contains(res.Candidates[0].FilePath, "internal/payment/client.go") {
+		t.Fatalf("expected downstream uninstrumented payment path to rank first, got %q", res.Candidates[0].FilePath)
+	}
+}
+
 func mustWrite(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

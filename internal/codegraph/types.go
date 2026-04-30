@@ -27,6 +27,7 @@ type FunctionNode struct {
 	UnresolvedCalls []string
 
 	StartsSpan   bool
+	IsHTTPHandler bool
 	ExternalOps  ExternalSignals
 	HandlesError bool
 }

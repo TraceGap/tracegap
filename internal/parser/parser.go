@@ -68,6 +68,9 @@ func ParseFile(path string) ([]Span, SchemaType, error) {
 }
 
 func detectSchema(root any) SchemaType {
+	if looksLikeDatadogRoot(root) {
+		return SchemaDatadog
+	}
 	m, ok := root.(map[string]any)
 	if !ok {
 		return SchemaUnknown
@@ -77,11 +80,6 @@ func detectSchema(root any) SchemaType {
 	}
 	if _, ok := m["data"]; ok {
 		return SchemaJaeger
-	}
-	if traces, ok := m["traces"]; ok {
-		if _, ok := traces.([]any); ok {
-			return SchemaDatadog
-		}
 	}
 	return SchemaUnknown
 }
@@ -143,18 +141,17 @@ func parseJaeger(root any) []Span {
 }
 
 func parseDatadog(root any) []Span {
-	m, ok := root.(map[string]any)
-	if !ok {
-		return nil
-	}
-	traces, ok := m["traces"].([]any)
-	if !ok {
+	traces := datadogTraceEntries(root)
+	if len(traces) == 0 {
 		return nil
 	}
 	out := make([]Span, 0, 128)
 	for _, traceEntry := range traces {
 		traceSpans, ok := traceEntry.([]any)
 		if !ok {
+			continue
+		}
+		if !looksLikeDatadogSpanArray(traceSpans) {
 			continue
 		}
 		for _, raw := range traceSpans {
@@ -189,6 +186,75 @@ func parseDatadog(root any) []Span {
 		}
 	}
 	return out
+}
+
+func looksLikeDatadogRoot(root any) bool {
+	entries := datadogTraceEntries(root)
+	for _, entry := range entries {
+		traceSpans, ok := entry.([]any)
+		if !ok {
+			continue
+		}
+		if looksLikeDatadogSpanArray(traceSpans) {
+			return true
+		}
+	}
+	return false
+}
+
+func datadogTraceEntries(root any) []any {
+	switch v := root.(type) {
+	case map[string]any:
+		if traces, ok := v["traces"].([]any); ok {
+			return traces
+		}
+		return nil
+	case []any:
+		return v
+	default:
+		return nil
+	}
+}
+
+func looksLikeDatadogSpanArray(items []any) bool {
+	if len(items) == 0 {
+		return false
+	}
+	for _, item := range items {
+		span, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if looksLikeDatadogSpanObject(span) {
+			return true
+		}
+	}
+	return false
+}
+
+func looksLikeDatadogSpanObject(span map[string]any) bool {
+	if span == nil {
+		return false
+	}
+	if hasAnyKey(span, "span_id", "spanId", "spanID", "id") && hasAnyKey(span, "trace_id", "traceId", "traceID") {
+		return true
+	}
+	if hasAnyKey(span, "span_id", "spanId", "spanID", "id") && hasAnyKey(span, "start", "start_ns", "startTime") {
+		return true
+	}
+	if hasAnyKey(span, "span_id", "spanId", "spanID", "id") && hasAnyKey(span, "duration", "duration_ns") {
+		return true
+	}
+	return false
+}
+
+func hasAnyKey(m map[string]any, keys ...string) bool {
+	for _, k := range keys {
+		if _, ok := m[k]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func parentIDFromJaegerRefs(span map[string]any) string {

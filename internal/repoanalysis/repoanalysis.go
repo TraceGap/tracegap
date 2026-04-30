@@ -30,6 +30,7 @@ const (
 	weightErrorContextAlign   = 1.8
 	weightSemanticRootAlign   = 1.2
 	weightErrorHandling       = 0.8
+	penaltyChildSpanSemantic  = 1.6
 	penaltyWeakEvidence       = 1.5
 	penaltyNoEntrypointPath   = 1.0
 
@@ -99,7 +100,8 @@ func Analyze(repoPath string, audit analyzer.AuditResult, spans []parser.Span) (
 	if audit.PrimaryRoot != nil {
 		rootName = audit.PrimaryRoot.RootSpan.Name
 	}
-	entry := matcher.MatchRootSpan(rootName, graph)
+	childNames := directChildSpanNames(spans, audit.PrimaryRoot)
+	entry := matcher.MatchRootSpan(rootName, childNames, graph)
 	entryNode := graph.Functions[entry.FunctionID]
 	entryConfidence := mapMatcherConfidence(entry.Confidence)
 	entryID := entry.FunctionID
@@ -123,13 +125,14 @@ func Analyze(repoPath string, audit analyzer.AuditResult, spans []parser.Span) (
 	}
 
 	rootTokens := tokenize(rootName)
+	childTokens := tokenize(strings.Join(childNames, " "))
 	gapTokens := gapContextTokens(audit.PrimaryRoot)
 	errorTokens := errorTokens(spans)
 
 	candidates := make([]Candidate, 0, 16)
 	for _, id := range graph.SortedIDs() {
 		fn := graph.Functions[id]
-		cand, ok := scoreCandidate(fn, id, entryID, rootName, result.Mode, audit.PrimaryRoot, reachable, result.WeakSignal, rootTokens, gapTokens, errorTokens)
+		cand, ok := scoreCandidate(fn, id, entryID, rootName, result.Mode, audit.PrimaryRoot, reachable, result.WeakSignal, rootTokens, childTokens, gapTokens, errorTokens)
 		if !ok {
 			continue
 		}
@@ -182,7 +185,7 @@ func scoreCandidate(
 	root *analyzer.RootResult,
 	reachable map[codegraph.FunctionID]struct{},
 	weakSignal bool,
-	rootTokens, gapTokens, errorTokens []string,
+	rootTokens, childTokens, gapTokens, errorTokens []string,
 ) (Candidate, bool) {
 	if fn.StartsSpan {
 		return Candidate{}, false
@@ -235,6 +238,11 @@ func scoreCandidate(
 		why = append(why, "Semantics align with root span")
 	}
 
+	childAlign := overlapScore(tokenize(fn.FuncName+" "+fn.FilePath+" "+fn.Package), childTokens)
+	if childAlign > 0 {
+		score -= penaltyChildSpanSemantic * childAlign
+	}
+
 	if fn.HandlesError {
 		score += weightErrorHandling
 		if mode == "error-context" {
@@ -251,6 +259,11 @@ func scoreCandidate(
 	isEntrypoint := id == entryID
 	hasStrongIndependentSignal := extStrength > 0 || gapAlign >= 0.6 || errorAlign >= 0.6 || (fn.HandlesError && (extStrength > 0 || gapAlign >= 0.4 || errorAlign >= 0.4))
 	if isEntrypoint && !hasStrongIndependentSignal {
+		return Candidate{}, false
+	}
+
+	if childAlign >= 0.65 && extStrength == 0 && gapAlign < 0.45 && errorAlign == 0 {
+		// Avoid preferring functions that semantically map to already-instrumented child spans.
 		return Candidate{}, false
 	}
 
@@ -602,4 +615,34 @@ func dedupeTokens(tokens []string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func directChildSpanNames(spans []parser.Span, root *analyzer.RootResult) []string {
+	if root == nil {
+		return nil
+	}
+	rootID := strings.TrimSpace(root.RootSpan.ID)
+	out := make([]string, 0, 8)
+	if rootID != "" {
+		for _, sp := range spans {
+			if strings.TrimSpace(sp.ParentID) != rootID {
+				continue
+			}
+			name := strings.TrimSpace(sp.Name)
+			if name == "" {
+				continue
+			}
+			out = append(out, name)
+		}
+	}
+	if len(out) == 0 {
+		for _, in := range root.MergedIntervals {
+			name := strings.TrimSpace(in.SpanName)
+			if name == "" {
+				continue
+			}
+			out = append(out, name)
+		}
+	}
+	return dedupeTokens(out)
 }

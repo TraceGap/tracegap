@@ -108,3 +108,78 @@ func TestParseFile_UnknownSchema(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestParseFile_DatadogMixedTopLevelArrayParses(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mixed-datadog.json")
+	data := []byte(`[
+	  [
+	    {"trace_id":"123","span_id":"1","parent_id":"0","name":"checkout.request","start":1700000000000000,"duration":1000},
+	    {"trace_id":"123","span_id":"2","parent_id":"1","name":"auth","start":1700000000000100,"duration":200}
+	  ],
+	  {"meta":"ignored"}
+	]`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("failed to write fixture: %v", err)
+	}
+
+	spans, schema, err := ParseFile(path)
+	if err != nil {
+		t.Fatalf("ParseFile failed: %v", err)
+	}
+	if schema != SchemaDatadog {
+		t.Fatalf("expected datadog schema, got %s", schema)
+	}
+	if len(spans) != 2 {
+		t.Fatalf("expected 2 spans, got %d", len(spans))
+	}
+}
+
+func TestParseFile_DatadogTopLevelMultipleValidArrays(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "multi-datadog.json")
+	data := []byte(`[
+	  [{"trace_id":"t1","span_id":"1","parent_id":"0","name":"root1","start":1700000000000000,"duration":500}],
+	  [{"trace_id":"t2","span_id":"3","parent_id":"0","name":"root2","start":1700000001000000,"duration":500}]
+	]`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("failed to write fixture: %v", err)
+	}
+
+	spans, schema, err := ParseFile(path)
+	if err != nil {
+		t.Fatalf("ParseFile failed: %v", err)
+	}
+	if schema != SchemaDatadog {
+		t.Fatalf("expected datadog schema, got %s", schema)
+	}
+	if len(spans) != 2 {
+		t.Fatalf("expected 2 spans, got %d", len(spans))
+	}
+}
+
+func TestParseFile_DatadogMixedInvalidAndValidElements(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mixed-elements-datadog.json")
+	data := []byte(`[
+	  "noise",
+	  123,
+	  {"not":"a trace"},
+	  [
+	    {"trace_id":"x","span_id":"10","parent_id":"0","name":"root","start":1700000000000000,"duration":1000},
+	    {"trace_id":"x","span_id":"11","parent_id":"10","name":"child","start":1700000000000100,"duration":200}
+	  ],
+	  [{"foo":"bar"}]
+	]`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("failed to write fixture: %v", err)
+	}
+
+	spans, schema, err := ParseFile(path)
+	if err != nil {
+		t.Fatalf("ParseFile failed: %v", err)
+	}
+	if schema != SchemaDatadog {
+		t.Fatalf("expected datadog schema, got %s", schema)
+	}
+	if len(spans) != 2 {
+		t.Fatalf("expected 2 spans from valid element, got %d", len(spans))
+	}
+}
