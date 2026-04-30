@@ -8,10 +8,16 @@ GORELEASER ?= goreleaser
 PKG := ./cmd/tgap
 LDFLAGS := -s -w
 
-.PHONY: test benchmark lint build build-local clean cross-build darwin-amd64 darwin-arm64 linux-amd64 linux-arm64 windows-amd64 release release-snapshot
+.PHONY: test benchmark lint build build-local clean cross-build darwin-amd64 darwin-arm64 linux-amd64 linux-arm64 windows-amd64 release release-snapshot sample-error sample-success
 
 test:
 	$(GO) test -count=1 ./...
+
+sample-error:
+	$(GO) run ./cmd/tgap audit examples/checkout-go/traces/checkout-error.json --repo examples/checkout-go
+
+sample-success:
+	$(GO) run ./cmd/tgap audit examples/checkout-go/traces/checkout-success.json --repo examples/checkout-go
 
 benchmark:
 	$(GO) test ./internal/analyzer -bench=. -benchmem

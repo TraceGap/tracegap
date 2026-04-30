@@ -8,9 +8,6 @@ type dbLike interface {
 
 func Save(ctx context.Context) error {
 	var db dbLike
-	_, err := db.ExecContext(ctx, "insert into orders(id) values(?)", "ord_123")
-	if err != nil {
-		return err
-	}
+	_, _ = db.ExecContext(ctx, "insert into orders(id) values(?)", "ord_123")
 	return nil
 }
