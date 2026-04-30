@@ -76,3 +76,16 @@ func TestMatchRootSpan_MetadataAndRouteTokensBoost(t *testing.T) {
 		t.Fatalf("expected route/metadata-aligned handler to win, got %s", m.FunctionID)
 	}
 }
+
+func TestMatchRootSpan_LowConfidenceWhenCandidatesAreTooClose(t *testing.T) {
+	graph := &codegraph.Graph{
+		Functions: map[codegraph.FunctionID]*codegraph.FunctionNode{
+			"a": {ID: "a", Package: "api", FilePath: "internal/api/checkout_handler.go", FuncName: "HandleCheckout", RouteTokens: []string{"checkout"}},
+			"b": {ID: "b", Package: "api", FilePath: "internal/api/checkout_controller.go", FuncName: "CheckoutController", RouteTokens: []string{"checkout"}},
+		},
+	}
+	m := MatchRootSpan("checkout.request", []string{"checkout"}, nil, graph)
+	if m.Confidence != ConfidenceLow {
+		t.Fatalf("expected low confidence for near-tie entrypoint candidates, got %s", m.Confidence)
+	}
+}

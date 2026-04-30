@@ -29,13 +29,13 @@ const (
 	weightHandlerPattern        = 2.0
 	weightHTTPHandlerSignature  = 2.4
 	penaltyChildSemanticOverlap = 2.4
-	penaltyDownstreamSemantic   = 1.8
-	penaltyExternalHeavyRoot    = 1.0
+	penaltyDownstreamSemantic   = 2.2
+	penaltyExternalHeavyRoot    = 1.2
 
 	thresholdHighConfidence   = 5.2
 	thresholdMediumConfidence = 3.2
 	minimumEntrypointScore    = 2.4
-	minimumConfidenceMargin   = 0.8
+	minimumConfidenceMargin   = 1.1
 )
 
 func MatchRootSpan(rootSpanName string, rootMetadataTokens []string, childSpanNames []string, graph *codegraph.Graph) EntryMatch {

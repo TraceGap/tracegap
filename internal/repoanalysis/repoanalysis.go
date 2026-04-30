@@ -30,7 +30,7 @@ const (
 	weightErrorContextAlign   = 1.8
 	weightSemanticRootAlign   = 1.2
 	weightErrorHandling       = 0.8
-	penaltyChildSpanSemantic  = 1.6
+	penaltyChildSpanSemantic  = 2.0
 	penaltyWeakEvidence       = 1.5
 	penaltyNoEntrypointPath   = 1.0
 
