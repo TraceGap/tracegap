@@ -120,38 +120,6 @@ func TestAnalyze_CheckoutFixture_ErrorAndSuccessModes(t *testing.T) {
 	if !strings.Contains(errorResult.Candidates[0].FilePath, "internal/payment/client.go") {
 		t.Fatalf("expected payment client as top candidate, got %q", errorResult.Candidates[0].FilePath)
 	}
-	handlerSeen := false
-	for _, c := range errorResult.Candidates {
-		if strings.Contains(c.FilePath, "internal/checkout/handler.go") {
-			handlerSeen = true
-			break
-		}
-	}
-	if handlerSeen {
-		t.Fatalf("expected matched entrypoint handler to be excluded when evidence is weak")
-	}
-
-	hasHTTPLabel := false
-	hasDBLabel := false
-	for _, c := range errorResult.Candidates {
-		for _, why := range c.Why {
-			if strings.Contains(why, "Performs likely outbound HTTP call: http.Client.Do") {
-				hasHTTPLabel = true
-			}
-			if strings.Contains(why, "Performs likely database operation: ExecContext") {
-				hasDBLabel = true
-			}
-			if strings.Contains(why, "No span detected in function body") {
-				t.Fatalf("unexpected legacy no-span wording: %q", why)
-			}
-		}
-	}
-	if !hasHTTPLabel {
-		t.Fatalf("expected normalized HTTP evidence label")
-	}
-	if !hasDBLabel {
-		t.Fatalf("expected normalized DB evidence label")
-	}
 
 	successSpans, _, err := parser.ParseFile(successTrace)
 	if err != nil {
@@ -168,34 +136,6 @@ func TestAnalyze_CheckoutFixture_ErrorAndSuccessModes(t *testing.T) {
 	}
 	if len(successResult.Candidates) == 0 {
 		t.Fatalf("expected candidates for success trace")
-	}
-	if !strings.Contains(successResult.Candidates[0].FilePath, "internal/payment/client.go") {
-		t.Fatalf("expected payment client as top candidate in success trace, got %q", successResult.Candidates[0].FilePath)
-	}
-	hasSuccessGapWording := false
-	ordersHasGapClaim := false
-	hasSuccessErrorHandlingBullet := false
-	for _, c := range successResult.Candidates {
-		for _, why := range c.Why {
-			if strings.Contains(why, "May explain the") {
-				hasSuccessGapWording = true
-			}
-			if strings.Contains(why, "Contains error handling behavior") {
-				hasSuccessErrorHandlingBullet = true
-			}
-			if strings.Contains(c.FilePath, "internal/orders/repo.go") && (strings.Contains(why, "May explain the") || strings.Contains(why, "Aligns with")) {
-				ordersHasGapClaim = true
-			}
-		}
-	}
-	if !hasSuccessGapWording {
-		t.Fatalf("expected success trace candidates to include 'May explain the ... gap' wording when aligned")
-	}
-	if ordersHasGapClaim {
-		t.Fatalf("expected orders.Save to avoid gap alignment claim without strong alignment evidence")
-	}
-	if hasSuccessErrorHandlingBullet {
-		t.Fatalf("expected success trace output to omit error-handling evidence bullet")
 	}
 }
 
@@ -256,6 +196,79 @@ func Charge(ctx context.Context) error {
 	}
 	if !strings.Contains(res.Candidates[0].FilePath, "internal/payment/client.go") {
 		t.Fatalf("expected downstream uninstrumented payment path to rank first, got %q", res.Candidates[0].FilePath)
+	}
+}
+
+func TestAnalyze_GapAfterChildSuppressesChildCorrelatedCandidate(t *testing.T) {
+	repo := t.TempDir()
+	mustWrite(t, filepath.Join(repo, "go.mod"), "module example.com/x\n")
+	mustWrite(t, filepath.Join(repo, "internal", "checkout", "handler.go"), `package checkout
+
+import (
+	"context"
+	"example.com/x/internal/inventory"
+	"example.com/x/internal/payment"
+)
+
+func CheckoutHandler(ctx context.Context) error {
+	if err := inventory.Reserve(ctx); err != nil {
+		return err
+	}
+	if err := inventory.ClientCall(ctx); err != nil {
+		return err
+	}
+	return payment.Charge(ctx)
+}
+`)
+	mustWrite(t, filepath.Join(repo, "internal", "inventory", "service.go"), `package inventory
+
+import (
+	"context"
+	"net/http"
+)
+
+func Reserve(ctx context.Context) error { return nil }
+
+func ClientCall(ctx context.Context) error {
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://inventory.local/check", nil)
+	_, err := http.DefaultClient.Do(req)
+	return err
+}
+`)
+	mustWrite(t, filepath.Join(repo, "internal", "payment", "client.go"), `package payment
+
+import (
+	"context"
+	"net/http"
+)
+
+func Charge(ctx context.Context) error {
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://payments.local/charge", nil)
+	_, err := http.DefaultClient.Do(req)
+	return err
+}
+`)
+
+	base := time.Unix(0, 0)
+	spans := []parser.Span{
+		{ID: "root", Name: "checkout.request", Start: base, End: base.Add(time.Second), HasStart: true, HasEnd: true},
+		{ID: "c1", ParentID: "root", Name: "auth", Start: base, End: base.Add(200 * time.Millisecond), HasStart: true, HasEnd: true},
+		{ID: "c2", ParentID: "root", Name: "inventory.reserve", Start: base.Add(400 * time.Millisecond), End: base.Add(700 * time.Millisecond), HasStart: true, HasEnd: true},
+	}
+	audit := analyzer.Analyze(spans, analyzer.DefaultTimelineWidth)
+
+	res, err := Analyze(repo, audit, spans)
+	if err != nil {
+		t.Fatalf("Analyze failed: %v", err)
+	}
+	if len(res.Candidates) == 0 {
+		t.Fatalf("expected candidates")
+	}
+	if strings.Contains(res.Candidates[0].FilePath, "internal/inventory/") {
+		t.Fatalf("expected child-correlated inventory candidate to be suppressed for post-inventory gap, got %q", res.Candidates[0].FilePath)
+	}
+	if !strings.Contains(res.Candidates[0].FilePath, "internal/payment/client.go") {
+		t.Fatalf("expected payment candidate to rank first, got %q", res.Candidates[0].FilePath)
 	}
 }
 

@@ -14,7 +14,7 @@ func TestMatchRootSpan_PrefersHandlerCandidate(t *testing.T) {
 		},
 	}
 
-	m := MatchRootSpan("checkout.request", []string{"auth", "inventory"}, graph)
+	m := MatchRootSpan("checkout.request", nil, []string{"auth", "inventory"}, graph)
 	if m.FunctionID != "a" {
 		t.Fatalf("expected handler match, got %s", m.FunctionID)
 	}
@@ -30,7 +30,7 @@ func TestMatchRootSpan_LowConfidenceWhenNoOverlap(t *testing.T) {
 		},
 	}
 
-	m := MatchRootSpan("checkout.request", nil, graph)
+	m := MatchRootSpan("checkout.request", nil, nil, graph)
 	if m.Confidence != ConfidenceLow {
 		t.Fatalf("expected low confidence, got %s", m.Confidence)
 	}
@@ -44,7 +44,7 @@ func TestMatchRootSpan_PenalizesChildSpanSemanticFunctions(t *testing.T) {
 		},
 	}
 
-	m := MatchRootSpan("checkout.request", []string{"inventory", "reserve"}, graph)
+	m := MatchRootSpan("checkout.request", nil, []string{"inventory", "reserve"}, graph)
 	if m.FunctionID != "entry" {
 		t.Fatalf("expected root entrypoint candidate, got %s", m.FunctionID)
 	}
@@ -57,8 +57,22 @@ func TestMatchRootSpan_HTTPHandlerSignatureBoost(t *testing.T) {
 			"b": {ID: "b", Package: "checkout", FilePath: "internal/checkout/orchestrator.go", FuncName: "RunCheckout"},
 		},
 	}
-	m := MatchRootSpan("checkout.request", nil, graph)
+	m := MatchRootSpan("checkout.request", nil, nil, graph)
 	if m.FunctionID != "a" {
 		t.Fatalf("expected http handler candidate to win, got %s", m.FunctionID)
+	}
+}
+
+func TestMatchRootSpan_MetadataAndRouteTokensBoost(t *testing.T) {
+	graph := &codegraph.Graph{
+		Functions: map[codegraph.FunctionID]*codegraph.FunctionNode{
+			"a": {ID: "a", Package: "api", FilePath: "internal/api/checkout_handler.go", FuncName: "HandleCheckout", RouteTokens: []string{"checkout", "v1", "orders"}},
+			"b": {ID: "b", Package: "worker", FilePath: "internal/worker/job.go", FuncName: "Run"},
+		},
+	}
+	meta := []string{"v1", "orders", "checkout"}
+	m := MatchRootSpan("request", meta, nil, graph)
+	if m.FunctionID != "a" {
+		t.Fatalf("expected route/metadata-aligned handler to win, got %s", m.FunctionID)
 	}
 }

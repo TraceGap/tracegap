@@ -28,6 +28,7 @@ type Span struct {
 	End      time.Time
 	HasStart bool
 	HasEnd   bool
+	MetadataTokens []string
 }
 
 func (s Span) HasTimestamps() bool {
@@ -85,6 +86,55 @@ func detectSchema(root any) SchemaType {
 }
 
 func parseOTLP(root any) []Span {
+	m, ok := root.(map[string]any)
+	if !ok {
+		spans := make([]Span, 0, 128)
+		walkAndCollect(root, &spans)
+		return spans
+	}
+	resourceSpans, ok := m["resourceSpans"].([]any)
+	if !ok {
+		spans := make([]Span, 0, 128)
+		walkAndCollect(root, &spans)
+		return spans
+	}
+	out := make([]Span, 0, 128)
+	for _, rsRaw := range resourceSpans {
+		rs, ok := rsRaw.(map[string]any)
+		if !ok {
+			continue
+		}
+		resourceTokens := otlpResourceTokens(rs)
+		scopeSpans, ok := rs["scopeSpans"].([]any)
+		if !ok {
+			continue
+		}
+		for _, ssRaw := range scopeSpans {
+			ss, ok := ssRaw.(map[string]any)
+			if !ok {
+				continue
+			}
+			spansAny, ok := ss["spans"].([]any)
+			if !ok {
+				continue
+			}
+			for _, rawSpan := range spansAny {
+				spanMap, ok := rawSpan.(map[string]any)
+				if !ok {
+					continue
+				}
+				span, parsed := tryParseSpan(spanMap)
+				if !parsed {
+					continue
+				}
+				span.MetadataTokens = dedupeTokens(append(span.MetadataTokens, resourceTokens...))
+				out = append(out, span)
+			}
+		}
+	}
+	if len(out) > 0 {
+		return out
+	}
 	spans := make([]Span, 0, 128)
 	walkAndCollect(root, &spans)
 	return spans
@@ -122,6 +172,7 @@ func parseJaeger(root any) []Span {
 				ID:       id,
 				ParentID: parentIDFromJaegerRefs(spanMap),
 				Name:     getString(spanMap, "operationName", "name"),
+				MetadataTokens: jaegerMetadataTokens(spanMap),
 			}
 			if span.Name == "" {
 				span.Name = span.ID
@@ -172,7 +223,7 @@ func parseDatadog(root any) []Span {
 				name = id
 			}
 
-			span := Span{ID: id, ParentID: parentID, Name: name}
+			span := Span{ID: id, ParentID: parentID, Name: name, MetadataTokens: datadogMetadataTokens(spanMap)}
 			if startRaw, ok := getInt64(spanMap, "start", "start_ns", "startTime"); ok {
 				start := epochWithUnitGuess(startRaw)
 				span.Start = start
@@ -300,6 +351,7 @@ func tryParseSpan(m map[string]any) (Span, bool) {
 		ID:       id,
 		ParentID: getString(m, "parentSpanId", "parent_span_id", "parentId", "parent_id"),
 		Name:     getString(m, "name"),
+		MetadataTokens: otlpSpanMetadataTokens(m),
 	}
 	if span.Name == "" {
 		span.Name = span.ID
@@ -315,6 +367,157 @@ func tryParseSpan(m map[string]any) (Span, bool) {
 	}
 
 	return span, true
+}
+
+func otlpResourceTokens(resourceSpan map[string]any) []string {
+	resource, ok := resourceSpan["resource"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	attrs, ok := resource["attributes"].([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, 8)
+	for _, raw := range attrs {
+		attr, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		key := strings.TrimSpace(getString(attr, "key"))
+		if key == "" {
+			continue
+		}
+		if !isMetadataKey(key) {
+			continue
+		}
+		valueObj, _ := attr["value"].(map[string]any)
+		for _, vk := range []string{"stringValue", "value"} {
+			if v := strings.TrimSpace(getString(valueObj, vk)); v != "" {
+				out = append(out, tokenize(v)...)
+			}
+		}
+	}
+	return dedupeTokens(out)
+}
+
+func otlpSpanMetadataTokens(span map[string]any) []string {
+	out := make([]string, 0, 10)
+	for _, k := range []string{"name", "resource", "service", "http.route", "url.path", "http.url"} {
+		if v := strings.TrimSpace(getString(span, k)); v != "" {
+			out = append(out, tokenize(v)...)
+		}
+	}
+	if attrs, ok := span["attributes"].([]any); ok {
+		for _, raw := range attrs {
+			attr, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			key := strings.TrimSpace(getString(attr, "key"))
+			if !isMetadataKey(key) {
+				continue
+			}
+			valueObj, _ := attr["value"].(map[string]any)
+			if v := strings.TrimSpace(getString(valueObj, "stringValue", "value")); v != "" {
+				out = append(out, tokenize(v)...)
+			}
+		}
+	}
+	return dedupeTokens(out)
+}
+
+func datadogMetadataTokens(span map[string]any) []string {
+	out := make([]string, 0, 12)
+	for _, k := range []string{"name", "resource", "service", "type"} {
+		if v := strings.TrimSpace(getString(span, k)); v != "" {
+			out = append(out, tokenize(v)...)
+		}
+	}
+	if meta, ok := span["meta"].(map[string]any); ok {
+		for key, val := range meta {
+			if !isMetadataKey(key) {
+				continue
+			}
+			if s, ok := val.(string); ok {
+				out = append(out, tokenize(s)...)
+			}
+		}
+	}
+	return dedupeTokens(out)
+}
+
+func jaegerMetadataTokens(span map[string]any) []string {
+	out := make([]string, 0, 10)
+	for _, k := range []string{"operationName", "name", "serviceName", "resource"} {
+		if v := strings.TrimSpace(getString(span, k)); v != "" {
+			out = append(out, tokenize(v)...)
+		}
+	}
+	if tags, ok := span["tags"].([]any); ok {
+		for _, raw := range tags {
+			tag, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			key := strings.TrimSpace(getString(tag, "key"))
+			if !isMetadataKey(key) {
+				continue
+			}
+			if v := strings.TrimSpace(getString(tag, "value", "vStr", "vstr")); v != "" {
+				out = append(out, tokenize(v)...)
+			}
+		}
+	}
+	return dedupeTokens(out)
+}
+
+func isMetadataKey(key string) bool {
+	k := strings.ToLower(strings.TrimSpace(key))
+	if k == "" {
+		return false
+	}
+	if strings.Contains(k, "service") || strings.Contains(k, "resource") || strings.Contains(k, "route") || strings.Contains(k, "url") || strings.Contains(k, "path") {
+		return true
+	}
+	return false
+}
+
+func tokenize(s string) []string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if s == "" {
+		return nil
+	}
+	repl := strings.NewReplacer("/", " ", "-", " ", "_", " ", ".", " ", ":", " ", "{", " ", "}", " ")
+	s = repl.Replace(s)
+	parts := strings.Fields(s)
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p == "" {
+			continue
+		}
+		out = append(out, p)
+	}
+	return dedupeTokens(out)
+}
+
+func dedupeTokens(tokens []string) []string {
+	if len(tokens) == 0 {
+		return nil
+	}
+	set := make(map[string]struct{}, len(tokens))
+	for _, t := range tokens {
+		t = strings.TrimSpace(t)
+		if t == "" {
+			continue
+		}
+		set[t] = struct{}{}
+	}
+	out := make([]string, 0, len(set))
+	for t := range set {
+		out = append(out, t)
+	}
+	return out
 }
 
 func getString(m map[string]any, keys ...string) string {

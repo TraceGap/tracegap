@@ -38,10 +38,10 @@ const (
 	minimumConfidenceMargin   = 0.8
 )
 
-func MatchRootSpan(rootSpanName string, childSpanNames []string, graph *codegraph.Graph) EntryMatch {
+func MatchRootSpan(rootSpanName string, rootMetadataTokens []string, childSpanNames []string, graph *codegraph.Graph) EntryMatch {
 	best := EntryMatch{Confidence: ConfidenceLow}
 	secondBest := EntryMatch{Confidence: ConfidenceLow}
-	rootTokens := tokenize(rootSpanName)
+	rootTokens := dedupeTokens(append(tokenize(rootSpanName), rootMetadataTokens...))
 	childTokens := tokenize(strings.Join(childSpanNames, " "))
 
 	for id, fn := range graph.Functions {
@@ -69,9 +69,19 @@ func MatchRootSpan(rootSpanName string, childSpanNames []string, graph *codegrap
 			score += weightHandlerPattern
 			reasons = append(reasons, "handler-like entrypoint naming")
 		}
+		boundaryBoost := boundaryTermBoost(fn)
+		if boundaryBoost > 0 {
+			score += boundaryBoost
+			reasons = append(reasons, "boundary package/path semantics")
+		}
 		if fn.IsHTTPHandler {
 			score += weightHTTPHandlerSignature
 			reasons = append(reasons, "HTTP handler signature")
+		}
+		routeOverlap := overlapScore(rootTokens, fn.RouteTokens)
+		if routeOverlap > 0 {
+			score += 2.2 * routeOverlap
+			reasons = append(reasons, "route/path semantics align with root metadata")
 		}
 
 		pkgOverlap := overlapScore(rootTokens, fnPkgTokens)
@@ -213,6 +223,51 @@ func downstreamPenalty(fn *codegraph.FunctionNode) float64 {
 		return 1
 	}
 	return v
+}
+
+func boundaryTermBoost(fn *codegraph.FunctionNode) float64 {
+	tokens := tokenize(fn.Package + " " + fn.FilePath + " " + fn.FuncName)
+	if len(tokens) == 0 {
+		return 0
+	}
+	boundaryTerms := map[string]struct{}{
+		"api": {}, "handler": {}, "handlers": {}, "controller": {}, "controllers": {},
+		"server": {}, "transport": {}, "endpoint": {},
+	}
+	matches := 0.0
+	for _, t := range tokens {
+		if _, ok := boundaryTerms[t]; ok {
+			matches++
+		}
+	}
+	if matches == 0 {
+		return 0
+	}
+	v := 0.7 + matches*0.25
+	if v > 1.8 {
+		return 1.8
+	}
+	return v
+}
+
+func dedupeTokens(tokens []string) []string {
+	if len(tokens) == 0 {
+		return nil
+	}
+	set := make(map[string]struct{}, len(tokens))
+	for _, t := range tokens {
+		t = strings.TrimSpace(strings.ToLower(t))
+		if t == "" {
+			continue
+		}
+		set[t] = struct{}{}
+	}
+	out := make([]string, 0, len(set))
+	for t := range set {
+		out = append(out, t)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func fileBaseToken(path string) string {

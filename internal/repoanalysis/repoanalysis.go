@@ -100,8 +100,9 @@ func Analyze(repoPath string, audit analyzer.AuditResult, spans []parser.Span) (
 	if audit.PrimaryRoot != nil {
 		rootName = audit.PrimaryRoot.RootSpan.Name
 	}
+	rootMetaTokens := rootMetadataTokens(spans, audit.PrimaryRoot)
 	childNames := directChildSpanNames(spans, audit.PrimaryRoot)
-	entry := matcher.MatchRootSpan(rootName, childNames, graph)
+	entry := matcher.MatchRootSpan(rootName, rootMetaTokens, childNames, graph)
 	entryNode := graph.Functions[entry.FunctionID]
 	entryConfidence := mapMatcherConfidence(entry.Confidence)
 	entryID := entry.FunctionID
@@ -124,15 +125,16 @@ func Analyze(repoPath string, audit analyzer.AuditResult, spans []parser.Span) (
 		result.WeakSignalMessage = "Weak signal: no confident root entrypoint match found, so reachable-path claims are intentionally omitted."
 	}
 
-	rootTokens := tokenize(rootName)
+	rootTokens := dedupeTokens(append(tokenize(rootName), rootMetaTokens...))
 	childTokens := tokenize(strings.Join(childNames, " "))
 	gapTokens := gapContextTokens(audit.PrimaryRoot)
+	primaryGapPrevTokens := primaryGapPrevSpanTokens(audit.PrimaryRoot)
 	errorTokens := errorTokens(spans)
 
 	candidates := make([]Candidate, 0, 16)
 	for _, id := range graph.SortedIDs() {
 		fn := graph.Functions[id]
-		cand, ok := scoreCandidate(fn, id, entryID, rootName, result.Mode, audit.PrimaryRoot, reachable, result.WeakSignal, rootTokens, childTokens, gapTokens, errorTokens)
+		cand, ok := scoreCandidate(fn, id, entryID, rootName, result.Mode, audit.PrimaryRoot, primaryGapPrevTokens, reachable, result.WeakSignal, rootTokens, childTokens, gapTokens, errorTokens)
 		if !ok {
 			continue
 		}
@@ -183,6 +185,7 @@ func scoreCandidate(
 	rootName string,
 	mode string,
 	root *analyzer.RootResult,
+	primaryGapPrevTokens []string,
 	reachable map[codegraph.FunctionID]struct{},
 	weakSignal bool,
 	rootTokens, childTokens, gapTokens, errorTokens []string,
@@ -216,7 +219,8 @@ func scoreCandidate(
 		}
 	}
 
-	gapAlign := overlapScore(tokenize(fn.FuncName+" "+fn.FilePath+" "+fn.Package), gapTokens)
+	semanticTokens := tokenize(fn.FuncName + " " + fn.FilePath + " " + fn.Package)
+	gapAlign := overlapScore(semanticTokens, gapTokens)
 	if gapAlign > 0 {
 		score += weightGapAlignment * gapAlign
 	}
@@ -226,21 +230,25 @@ func scoreCandidate(
 		why = append(why, "Semantics align with largest trace gaps")
 	}
 
-	errorAlign := overlapScore(tokenize(fn.FuncName+" "+fn.FilePath+" "+fn.Package), errorTokens)
+	errorAlign := overlapScore(semanticTokens, errorTokens)
 	if errorAlign > 0 {
 		score += weightErrorContextAlign * errorAlign
 		why = append(why, "Semantics align with error context")
 	}
 
-	rootAlign := overlapScore(tokenize(fn.FuncName+" "+fn.FilePath+" "+fn.Package), rootTokens)
+	rootAlign := overlapScore(semanticTokens, rootTokens)
 	if rootAlign > 0 {
 		score += weightSemanticRootAlign * rootAlign
 		why = append(why, "Semantics align with root span")
 	}
 
-	childAlign := overlapScore(tokenize(fn.FuncName+" "+fn.FilePath+" "+fn.Package), childTokens)
+	childAlign := overlapScore(semanticTokens, childTokens)
 	if childAlign > 0 {
 		score -= penaltyChildSpanSemantic * childAlign
+	}
+	prevGapChildAlign := overlapScore(semanticTokens, primaryGapPrevTokens)
+	if prevGapChildAlign >= 0.5 {
+		score -= 2.4 * prevGapChildAlign
 	}
 
 	if fn.HandlesError {
@@ -264,6 +272,10 @@ func scoreCandidate(
 
 	if childAlign >= 0.65 && extStrength == 0 && gapAlign < 0.45 && errorAlign == 0 {
 		// Avoid preferring functions that semantically map to already-instrumented child spans.
+		return Candidate{}, false
+	}
+	if prevGapChildAlign >= 0.7 && childAlign >= 0.5 && gapAlign < 0.6 && errorAlign == 0 {
+		// For gaps after known child spans, suppress candidates that map back to that already-instrumented child path.
 		return Candidate{}, false
 	}
 
@@ -645,4 +657,33 @@ func directChildSpanNames(spans []parser.Span, root *analyzer.RootResult) []stri
 		}
 	}
 	return dedupeTokens(out)
+}
+
+func rootMetadataTokens(spans []parser.Span, root *analyzer.RootResult) []string {
+	if root == nil {
+		return nil
+	}
+	rootID := strings.TrimSpace(root.RootSpan.ID)
+	if rootID == "" {
+		return dedupeTokens(root.RootSpan.MetadataTokens)
+	}
+	for _, sp := range spans {
+		if strings.TrimSpace(sp.ID) != rootID {
+			continue
+		}
+		return dedupeTokens(sp.MetadataTokens)
+	}
+	return dedupeTokens(root.RootSpan.MetadataTokens)
+}
+
+func primaryGapPrevSpanTokens(root *analyzer.RootResult) []string {
+	if root == nil || len(root.LargestGaps) == 0 || len(root.MergedIntervals) == 0 {
+		return nil
+	}
+	gap := root.LargestGaps[0]
+	prev, _ := neighborSpanNames(gap, root.MergedIntervals)
+	if strings.TrimSpace(prev) == "" {
+		return nil
+	}
+	return tokenize(prev)
 }

@@ -7,6 +7,7 @@ import (
 	"go/token"
 	"io/fs"
 	"path/filepath"
+	"strconv"
 	"sort"
 	"strings"
 
@@ -74,6 +75,7 @@ func BuildGraph(repoPath string, opts Options) (*codegraph.Graph, error) {
 		}
 		rel = filepath.ToSlash(rel)
 		imports := importAliases(parsed.Imports)
+		routeHints := collectRouteHints(parsed)
 
 		for _, decl := range parsed.Decls {
 			fnDecl, ok := decl.(*ast.FuncDecl)
@@ -100,6 +102,8 @@ func BuildGraph(repoPath string, opts Options) (*codegraph.Graph, error) {
 			calls, startsSpan, externalOps, handlesErr := analyzeBody(fnDecl, imports)
 			node.StartsSpan = startsSpan
 			node.IsHTTPHandler = isHTTPHandlerSignature(fnDecl, imports)
+			node.RouteTokens = append(node.RouteTokens, routeHints[fnName]...)
+			node.RouteTokens = dedupeStrings(node.RouteTokens)
 			node.ExternalOps = externalOps
 			node.HandlesError = handlesErr
 			pending = append(pending, pendingNode{node: node, pkg: parsed.Name.Name, rawCalls: calls, importPkgs: imports})
@@ -227,6 +231,107 @@ func importAliases(imports []*ast.ImportSpec) map[string]string {
 		}
 		out[alias] = path
 	}
+	return out
+}
+
+func collectRouteHints(file *ast.File) map[string][]string {
+	out := make(map[string][]string)
+	ast.Inspect(file, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		handler, path, ok := parseRouteRegistration(call)
+		if !ok {
+			return true
+		}
+		toks := routePathTokens(path)
+		if len(toks) == 0 {
+			return true
+		}
+		out[handler] = append(out[handler], toks...)
+		out[handler] = dedupeStrings(out[handler])
+		return true
+	})
+	return out
+}
+
+func parseRouteRegistration(call *ast.CallExpr) (handlerName, routePath string, ok bool) {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || sel.Sel == nil {
+		return "", "", false
+	}
+	m := strings.ToLower(strings.TrimSpace(sel.Sel.Name))
+	if !isRouteRegistrationMethod(m) {
+		return "", "", false
+	}
+	if len(call.Args) < 2 {
+		return "", "", false
+	}
+	pathLit, ok := call.Args[0].(*ast.BasicLit)
+	if !ok || pathLit.Kind != token.STRING {
+		return "", "", false
+	}
+	path, err := strconv.Unquote(pathLit.Value)
+	if err != nil {
+		path = strings.Trim(pathLit.Value, "\"")
+	}
+	handler := handlerExprName(call.Args[1])
+	if handler == "" || strings.TrimSpace(path) == "" {
+		return "", "", false
+	}
+	return handler, path, true
+}
+
+func isRouteRegistrationMethod(method string) bool {
+	switch method {
+	case "handlefunc", "handle", "get", "post", "put", "delete", "patch", "options", "head":
+		return true
+	default:
+		return false
+	}
+}
+
+func handlerExprName(expr ast.Expr) string {
+	switch v := expr.(type) {
+	case *ast.Ident:
+		return strings.TrimSpace(v.Name)
+	case *ast.SelectorExpr:
+		if v.Sel != nil {
+			return strings.TrimSpace(v.Sel.Name)
+		}
+	}
+	return ""
+}
+
+func routePathTokens(path string) []string {
+	clean := strings.TrimSpace(strings.ToLower(path))
+	if clean == "" {
+		return nil
+	}
+	repl := strings.NewReplacer("/", " ", "-", " ", "_", " ", "{", " ", "}", " ", ":", " ")
+	clean = repl.Replace(clean)
+	parts := strings.Fields(clean)
+	return dedupeStrings(parts)
+}
+
+func dedupeStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	set := make(map[string]struct{}, len(values))
+	for _, v := range values {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		set[v] = struct{}{}
+	}
+	out := make([]string, 0, len(set))
+	for v := range set {
+		out = append(out, v)
+	}
+	sort.Strings(out)
 	return out
 }
 

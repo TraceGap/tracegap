@@ -22,6 +22,7 @@ type FunctionNode struct {
 	QualifiedName string
 	StartLine     int
 	EndLine       int
+	RouteTokens   []string
 
 	LocalCalls      []FunctionID
 	UnresolvedCalls []string

@@ -143,6 +143,36 @@ func Charge() error {
 	}
 }
 
+func TestBuildGraph_AssociatesRouteTokensWithHandler(t *testing.T) {
+	repo := t.TempDir()
+	mustWrite(t, filepath.Join(repo, "go.mod"), "module example.com/test\n")
+	mustWrite(t, filepath.Join(repo, "internal", "api", "routes.go"), `package api
+
+import "net/http"
+
+func RegisterRoutes() {
+	http.HandleFunc("/v1/checkout/orders", HandleCheckout)
+}
+
+func HandleCheckout(w http.ResponseWriter, r *http.Request) {}
+`)
+
+	graph, err := BuildGraph(repo, DefaultOptions())
+	if err != nil {
+		t.Fatalf("BuildGraph failed: %v", err)
+	}
+	h := findByName(t, graph, "HandleCheckout")
+	if !h.IsHTTPHandler {
+		t.Fatalf("expected HTTP handler signature to be detected")
+	}
+	joined := strings.Join(h.RouteTokens, " ")
+	for _, tok := range []string{"v1", "checkout", "orders"} {
+		if !strings.Contains(joined, tok) {
+			t.Fatalf("expected route token %q in %q", tok, joined)
+		}
+	}
+}
+
 func findByName(t *testing.T, graph *codegraph.Graph, name string) *codegraph.FunctionNode {
 	t.Helper()
 	ids := graph.ByName[name]
