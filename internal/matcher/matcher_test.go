@@ -77,6 +77,20 @@ func TestMatchRootSpan_MetadataAndRouteTokensBoost(t *testing.T) {
 	}
 }
 
+func TestMatchRootSpan_RouteCheckoutBeatsUnrelatedHandler(t *testing.T) {
+	graph := &codegraph.Graph{
+		Functions: map[codegraph.FunctionID]*codegraph.FunctionNode{
+			"checkout": {ID: "checkout", Package: "api", FilePath: "internal/api/checkout_handler.go", FuncName: "HandleCheckout", IsHTTPHandler: true, RouteTokens: []string{"checkout"}},
+			"other":    {ID: "other", Package: "api", FilePath: "internal/api/inventory_handler.go", FuncName: "HandleInventory", IsHTTPHandler: true, RouteTokens: []string{"inventory"}},
+		},
+	}
+	meta := []string{"post", "checkout"}
+	m := MatchRootSpan("request", meta, []string{"inventory", "reserve"}, graph)
+	if m.FunctionID != "checkout" {
+		t.Fatalf("expected route-aligned checkout handler to win, got %s", m.FunctionID)
+	}
+}
+
 func TestMatchRootSpan_LowConfidenceWhenCandidatesAreTooClose(t *testing.T) {
 	graph := &codegraph.Graph{
 		Functions: map[codegraph.FunctionID]*codegraph.FunctionNode{

@@ -30,7 +30,9 @@ const (
 	weightErrorContextAlign   = 1.8
 	weightSemanticRootAlign   = 1.2
 	weightErrorHandling       = 0.8
+	weightGapAfterDownstream  = 1.6
 	penaltyChildSpanSemantic  = 2.0
+	penaltyGapPrevSpanMatch   = 3.0
 	penaltyWeakEvidence       = 1.5
 	penaltyNoEntrypointPath   = 1.0
 
@@ -129,12 +131,13 @@ func Analyze(repoPath string, audit analyzer.AuditResult, spans []parser.Span) (
 	childTokens := tokenize(strings.Join(childNames, " "))
 	gapTokens := gapContextTokens(audit.PrimaryRoot)
 	primaryGapPrevTokens := primaryGapPrevSpanTokens(audit.PrimaryRoot)
+	primaryGapKind := primaryGapKind(audit.PrimaryRoot)
 	errorTokens := errorTokens(spans)
 
 	candidates := make([]Candidate, 0, 16)
 	for _, id := range graph.SortedIDs() {
 		fn := graph.Functions[id]
-		cand, ok := scoreCandidate(fn, id, entryID, rootName, result.Mode, audit.PrimaryRoot, primaryGapPrevTokens, reachable, result.WeakSignal, rootTokens, childTokens, gapTokens, errorTokens)
+		cand, ok := scoreCandidate(fn, id, entryID, rootName, result.Mode, audit.PrimaryRoot, primaryGapPrevTokens, primaryGapKind, reachable, result.WeakSignal, rootTokens, childTokens, gapTokens, errorTokens)
 		if !ok {
 			continue
 		}
@@ -186,6 +189,7 @@ func scoreCandidate(
 	mode string,
 	root *analyzer.RootResult,
 	primaryGapPrevTokens []string,
+	primaryGapKind string,
 	reachable map[codegraph.FunctionID]struct{},
 	weakSignal bool,
 	rootTokens, childTokens, gapTokens, errorTokens []string,
@@ -248,7 +252,10 @@ func scoreCandidate(
 	}
 	prevGapChildAlign := overlapScore(semanticTokens, primaryGapPrevTokens)
 	if prevGapChildAlign >= 0.5 {
-		score -= 2.4 * prevGapChildAlign
+		score -= penaltyGapPrevSpanMatch * prevGapChildAlign
+	}
+	if primaryGapKind == "after_last" && onReachablePath && extStrength > 0 && prevGapChildAlign < 0.3 {
+		score += weightGapAfterDownstream
 	}
 
 	if fn.HandlesError {
@@ -276,6 +283,10 @@ func scoreCandidate(
 	}
 	if prevGapChildAlign >= 0.7 && childAlign >= 0.5 && gapAlign < 0.6 && errorAlign == 0 {
 		// For gaps after known child spans, suppress candidates that map back to that already-instrumented child path.
+		return Candidate{}, false
+	}
+	if primaryGapKind == "after_last" && prevGapChildAlign >= 0.5 && extStrength > 0 && gapAlign < 0.7 && errorAlign == 0 {
+		// Do not top-rank operations that strongly map to the already-instrumented preceding span.
 		return Candidate{}, false
 	}
 
@@ -686,4 +697,11 @@ func primaryGapPrevSpanTokens(root *analyzer.RootResult) []string {
 		return nil
 	}
 	return tokenize(prev)
+}
+
+func primaryGapKind(root *analyzer.RootResult) string {
+	if root == nil || len(root.LargestGaps) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(root.LargestGaps[0].Kind)
 }

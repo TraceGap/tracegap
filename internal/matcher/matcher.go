@@ -28,6 +28,8 @@ const (
 	weightRootPackageOverlap    = 1.8
 	weightHandlerPattern        = 2.0
 	weightHTTPHandlerSignature  = 2.4
+	weightRouteOverlap          = 3.0
+	weightRouteHandlerCombo     = 2.8
 	penaltyChildSemanticOverlap = 2.4
 	penaltyDownstreamSemantic   = 2.2
 	penaltyExternalHeavyRoot    = 1.2
@@ -80,8 +82,12 @@ func MatchRootSpan(rootSpanName string, rootMetadataTokens []string, childSpanNa
 		}
 		routeOverlap := overlapScore(rootTokens, fn.RouteTokens)
 		if routeOverlap > 0 {
-			score += 2.2 * routeOverlap
+			score += weightRouteOverlap * routeOverlap
 			reasons = append(reasons, "route/path semantics align with root metadata")
+			if fn.IsHTTPHandler || hasHandlerPattern(fn.FuncName) {
+				score += weightRouteHandlerCombo * routeOverlap
+				reasons = append(reasons, "route-aligned handler entrypoint")
+			}
 		}
 
 		pkgOverlap := overlapScore(rootTokens, fnPkgTokens)

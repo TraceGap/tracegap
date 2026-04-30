@@ -270,6 +270,14 @@ func Charge(ctx context.Context) error {
 	if !strings.Contains(res.Candidates[0].FilePath, "internal/payment/client.go") {
 		t.Fatalf("expected payment candidate to rank first, got %q", res.Candidates[0].FilePath)
 	}
+	for i := range res.Candidates {
+		if i == 0 {
+			continue
+		}
+		if strings.Contains(res.Candidates[i].FilePath, "internal/inventory/") {
+			break
+		}
+	}
 }
 
 func mustWrite(t *testing.T, path, content string) {
