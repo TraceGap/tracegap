@@ -93,8 +93,10 @@ TraceGap is intentionally tolerant and can parse OTLP-style variants, but canoni
 
 ```bash
 tgap audit trace.json --format json
+tgap audit trace.json --repo .
 # alias command works too
 tracegap audit trace.json --format json
+tracegap audit trace.json --repo .
 ```
 
 Returns structured output including:
@@ -192,18 +194,20 @@ Supported commands only:
 ```bash
 tgap audit trace.json
 tgap audit trace.json --format json
+tgap audit trace.json --repo .
 tgap --version
 tgap --help
 tracegap audit trace.json
 tracegap audit trace.json --format json
+tracegap audit trace.json --repo .
 tracegap --version
 tracegap --help
 ```
 
-No other commands are implemented in v1.
+No other commands are implemented.
 
 ## Notes
 
 - Analysis is based on direct children of each root span in v1.
 - Guidance is intentionally probabilistic and pattern-based.
-- TraceGap does not inspect source code in v1.
+- Repo-aware analysis runs only when --repo is provided.
