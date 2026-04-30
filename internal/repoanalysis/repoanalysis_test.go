@@ -88,9 +88,6 @@ func (c *C) Do() error { return nil }
 	if err != nil {
 		t.Fatalf("Analyze failed: %v", err)
 	}
-	if len(res.Candidates) < 1 {
-		t.Fatalf("expected at least one candidate")
-	}
 	if len(res.Candidates) > maxCandidateCount {
 		t.Fatalf("expected max %d candidates, got %d", maxCandidateCount, len(res.Candidates))
 	}
@@ -270,16 +267,222 @@ func Charge(ctx context.Context) error {
 	if !strings.Contains(res.Candidates[0].FilePath, "internal/payment/client.go") {
 		t.Fatalf("expected payment candidate to rank first, got %q", res.Candidates[0].FilePath)
 	}
-	for i := range res.Candidates {
-		if i == 0 {
-			continue
-		}
-		if strings.Contains(res.Candidates[i].FilePath, "internal/inventory/") {
-			break
+}
+
+func TestAnalyze_MatchedEntrypointExcludedWithWeakEvidence(t *testing.T) {
+	repo := t.TempDir()
+	mustWrite(t, filepath.Join(repo, "go.mod"), "module example.com/x\n")
+	mustWrite(t, filepath.Join(repo, "internal", "checkout", "handler.go"), `package checkout
+
+import (
+	"context"
+	"example.com/x/internal/helper"
+	"example.com/x/internal/payment"
+)
+
+func CheckoutHandler(ctx context.Context) error {
+	helper.BuildContext(ctx)
+	return payment.Charge(ctx)
+}
+`)
+
+	mustWrite(t, filepath.Join(repo, "internal", "helper", "helper.go"), `package helper
+
+import "context"
+
+func BuildContext(ctx context.Context) {}
+`)
+	mustWrite(t, filepath.Join(repo, "internal", "payment", "client.go"), `package payment
+
+import (
+	"context"
+	"net/http"
+)
+
+func Charge(ctx context.Context) error {
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://payments.local/charge", nil)
+	_, err := http.DefaultClient.Do(req)
+	return err
+}
+`)
+
+	base := time.Unix(0, 0)
+	spans := []parser.Span{
+		{ID: "root", Name: "checkout.request", Start: base, End: base.Add(time.Second), HasStart: true, HasEnd: true},
+		{ID: "c1", ParentID: "root", Name: "auth", Start: base, End: base.Add(200 * time.Millisecond), HasStart: true, HasEnd: true},
+		{ID: "c2", ParentID: "root", Name: "inventory", Start: base.Add(400 * time.Millisecond), End: base.Add(700 * time.Millisecond), HasStart: true, HasEnd: true},
+	}
+	audit := analyzer.Analyze(spans, analyzer.DefaultTimelineWidth)
+
+	res, err := Analyze(repo, audit, spans)
+	if err != nil {
+		t.Fatalf("Analyze failed: %v", err)
+	}
+	for _, c := range res.Candidates {
+		if strings.Contains(c.FilePath, "internal/checkout/handler.go") {
+			t.Fatalf("expected matched entrypoint with weak independent evidence to be excluded")
 		}
 	}
 }
 
+func TestAnalyze_TinyGapsIgnoredWhenDominantGapExists(t *testing.T) {
+	repo := t.TempDir()
+	mustWrite(t, filepath.Join(repo, "go.mod"), "module example.com/x\n")
+	mustWrite(t, filepath.Join(repo, "internal", "checkout", "handler.go"), `package checkout
+
+import (
+	"context"
+	"example.com/x/internal/payment"
+)
+
+func CheckoutHandler(ctx context.Context) error { return payment.Charge(ctx) }
+`)
+	mustWrite(t, filepath.Join(repo, "internal", "payment", "client.go"), `package payment
+
+import (
+	"context"
+	"net/http"
+)
+
+func Charge(ctx context.Context) error {
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://payments.local/charge", nil)
+	_, err := http.DefaultClient.Do(req)
+	return err
+}
+`)
+
+	base := time.Unix(0, 0)
+	spans := []parser.Span{
+		{ID: "root", Name: "checkout.request", Start: base, End: base.Add(time.Second), HasStart: true, HasEnd: true},
+		{ID: "c1", ParentID: "root", Name: "auth", Start: base, End: base.Add(200 * time.Millisecond), HasStart: true, HasEnd: true},
+		{ID: "c2", ParentID: "root", Name: "inventory", Start: base.Add(400 * time.Millisecond), End: base.Add(700 * time.Millisecond), HasStart: true, HasEnd: true},
+		{ID: "c3", ParentID: "root", Name: "tiny.marker", Start: base.Add(980 * time.Millisecond), End: base.Add(990 * time.Millisecond), HasStart: true, HasEnd: true},
+	}
+	audit := analyzer.Analyze(spans, analyzer.DefaultTimelineWidth)
+
+	res, err := Analyze(repo, audit, spans)
+	if err != nil {
+		t.Fatalf("Analyze failed: %v", err)
+	}
+	for _, c := range res.Candidates {
+		for _, why := range c.Why {
+			if strings.Contains(why, "10ms gap") {
+				t.Fatalf("expected tiny 10ms gap evidence to be ignored when dominant gap exists")
+			}
+		}
+	}
+}
+
+func TestAnalyze_InternalHelperNotEmittedOnReachabilityOnly(t *testing.T) {
+	repo := t.TempDir()
+	mustWrite(t, filepath.Join(repo, "go.mod"), "module example.com/x\n")
+	mustWrite(t, filepath.Join(repo, "internal", "checkout", "handler.go"), `package checkout
+
+import (
+	"context"
+	"example.com/x/internal/helper"
+	"example.com/x/internal/payment"
+)
+
+func CheckoutHandler(ctx context.Context) error {
+	helper.BuildContext(ctx)
+	return payment.Charge(ctx)
+}
+`)
+	mustWrite(t, filepath.Join(repo, "internal", "helper", "helper.go"), `package helper
+
+import "context"
+
+func BuildContext(ctx context.Context) {}
+`)
+	mustWrite(t, filepath.Join(repo, "internal", "payment", "client.go"), `package payment
+
+import (
+	"context"
+	"net/http"
+)
+
+func Charge(ctx context.Context) error {
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://payments.local/charge", nil)
+	_, err := http.DefaultClient.Do(req)
+	return err
+}
+`)
+
+	base := time.Unix(0, 0)
+	spans := []parser.Span{
+		{ID: "root", Name: "checkout.request", Start: base, End: base.Add(time.Second), HasStart: true, HasEnd: true},
+		{ID: "c1", ParentID: "root", Name: "auth", Start: base, End: base.Add(200 * time.Millisecond), HasStart: true, HasEnd: true},
+		{ID: "c2", ParentID: "root", Name: "inventory", Start: base.Add(400 * time.Millisecond), End: base.Add(700 * time.Millisecond), HasStart: true, HasEnd: true},
+	}
+	audit := analyzer.Analyze(spans, analyzer.DefaultTimelineWidth)
+
+	res, err := Analyze(repo, audit, spans)
+	if err != nil {
+		t.Fatalf("Analyze failed: %v", err)
+	}
+	for _, c := range res.Candidates {
+		if strings.Contains(c.FilePath, "internal/helper/helper.go") {
+			t.Fatalf("expected helper function to be excluded when only reachable and uninstrumented")
+		}
+	}
+}
+
+func TestAnalyze_LargestGapAlignedExternalRanksAboveHelper(t *testing.T) {
+	repo := t.TempDir()
+	mustWrite(t, filepath.Join(repo, "go.mod"), "module example.com/x\n")
+	mustWrite(t, filepath.Join(repo, "internal", "checkout", "handler.go"), `package checkout
+
+import (
+	"context"
+	"example.com/x/internal/helper"
+	"example.com/x/internal/payment"
+)
+
+func CheckoutHandler(ctx context.Context) error {
+	helper.BuildContext(ctx)
+	return payment.Charge(ctx)
+}
+`)
+	mustWrite(t, filepath.Join(repo, "internal", "helper", "helper.go"), `package helper
+
+import "context"
+
+func BuildContext(ctx context.Context) {}
+`)
+	mustWrite(t, filepath.Join(repo, "internal", "payment", "client.go"), `package payment
+
+import (
+	"context"
+	"net/http"
+)
+
+func Charge(ctx context.Context) error {
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://payments.local/charge", nil)
+	_, err := http.DefaultClient.Do(req)
+	return err
+}
+`)
+
+	base := time.Unix(0, 0)
+	spans := []parser.Span{
+		{ID: "root", Name: "checkout.request", Start: base, End: base.Add(time.Second), HasStart: true, HasEnd: true},
+		{ID: "c1", ParentID: "root", Name: "auth", Start: base, End: base.Add(200 * time.Millisecond), HasStart: true, HasEnd: true},
+		{ID: "c2", ParentID: "root", Name: "inventory", Start: base.Add(400 * time.Millisecond), End: base.Add(700 * time.Millisecond), HasStart: true, HasEnd: true},
+	}
+	audit := analyzer.Analyze(spans, analyzer.DefaultTimelineWidth)
+
+	res, err := Analyze(repo, audit, spans)
+	if err != nil {
+		t.Fatalf("Analyze failed: %v", err)
+	}
+	if len(res.Candidates) == 0 {
+		t.Fatalf("expected candidates")
+	}
+	if !strings.Contains(res.Candidates[0].FilePath, "internal/payment/client.go") {
+		t.Fatalf("expected largest-gap aligned external operation to rank first, got %q", res.Candidates[0].FilePath)
+	}
+}
 func mustWrite(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

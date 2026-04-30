@@ -39,11 +39,14 @@ const (
 	thresholdHighConfidence         = 8.5
 	thresholdMediumConfidence       = 5.5
 	thresholdCandidateInclusion     = 3.0
-	thresholdStrongEvidenceFallback = 5.0
+	thresholdStrongEvidenceFallback = 6.5
 
 	defaultCandidateCount = 3
 	maxCandidateCount     = 5
 	maxDepth              = 6
+
+	minGapEvidenceDuration = 25 * time.Millisecond
+	minGapEvidenceRatio    = 0.05
 )
 
 type MatchedRoot struct {
@@ -129,15 +132,16 @@ func Analyze(repoPath string, audit analyzer.AuditResult, spans []parser.Span) (
 
 	rootTokens := dedupeTokens(append(tokenize(rootName), rootMetaTokens...))
 	childTokens := tokenize(strings.Join(childNames, " "))
-	gapTokens := gapContextTokens(audit.PrimaryRoot)
-	primaryGapPrevTokens := primaryGapPrevSpanTokens(audit.PrimaryRoot)
-	primaryGapKind := primaryGapKind(audit.PrimaryRoot)
+	evidenceGaps := selectEvidenceGaps(audit.PrimaryRoot)
+	gapTokens := gapContextTokens(audit.PrimaryRoot, evidenceGaps)
+	primaryGapPrevTokens := primaryGapPrevSpanTokens(audit.PrimaryRoot, evidenceGaps)
+	primaryGapKind := primaryGapKind(evidenceGaps)
 	errorTokens := errorTokens(spans)
 
 	candidates := make([]Candidate, 0, 16)
 	for _, id := range graph.SortedIDs() {
 		fn := graph.Functions[id]
-		cand, ok := scoreCandidate(fn, id, entryID, rootName, result.Mode, audit.PrimaryRoot, primaryGapPrevTokens, primaryGapKind, reachable, result.WeakSignal, rootTokens, childTokens, gapTokens, errorTokens)
+		cand, ok := scoreCandidate(fn, id, entryID, rootName, result.Mode, audit.PrimaryRoot, evidenceGaps, primaryGapPrevTokens, primaryGapKind, reachable, result.WeakSignal, rootTokens, childTokens, gapTokens, errorTokens)
 		if !ok {
 			continue
 		}
@@ -188,6 +192,7 @@ func scoreCandidate(
 	rootName string,
 	mode string,
 	root *analyzer.RootResult,
+	evidenceGaps []analyzer.Gap,
 	primaryGapPrevTokens []string,
 	primaryGapKind string,
 	reachable map[codegraph.FunctionID]struct{},
@@ -228,7 +233,7 @@ func scoreCandidate(
 	if gapAlign > 0 {
 		score += weightGapAlignment * gapAlign
 	}
-	if line, ok := gapWhyLine(root, fn, mode, onReachablePath, extStrength > 0, gapAlign); ok {
+	if line, ok := gapWhyLine(root, evidenceGaps, fn, mode, onReachablePath, extStrength > 0, gapAlign); ok {
 		why = append(why, line)
 	} else if gapAlign > 0 {
 		why = append(why, "Semantics align with largest trace gaps")
@@ -262,6 +267,13 @@ func scoreCandidate(
 		score += weightErrorHandling
 		if mode == "error-context" {
 			why = append(why, "Contains error handling behavior")
+		}
+	}
+
+	if extStrength == 0 && isInternalHelperLike(fn) {
+		if gapAlign < 0.65 || errorAlign < 0.35 {
+			// Helper-like internal functions need strong gap alignment and error relevance.
+			return Candidate{}, false
 		}
 	}
 
@@ -395,14 +407,14 @@ func externalReasonLine(reasons []string) string {
 	}
 }
 
-func gapWhyLine(root *analyzer.RootResult, fn *codegraph.FunctionNode, mode string, onReachablePath bool, hasExternalSignal bool, gapAlign float64) (string, bool) {
-	if root == nil || len(root.LargestGaps) == 0 || len(root.MergedIntervals) == 0 || !fn.HandlesError {
+func gapWhyLine(root *analyzer.RootResult, evidenceGaps []analyzer.Gap, fn *codegraph.FunctionNode, mode string, onReachablePath bool, hasExternalSignal bool, gapAlign float64) (string, bool) {
+	if root == nil || len(evidenceGaps) == 0 || len(root.MergedIntervals) == 0 || !fn.HandlesError {
 		return "", false
 	}
 	fnTokens := tokenize(fn.FuncName + " " + fn.FilePath + " " + fn.Package)
 	bestScore := 0.0
 	bestText := ""
-	for _, gap := range root.LargestGaps {
+	for _, gap := range evidenceGaps {
 		prev, next := neighborSpanNames(gap, root.MergedIntervals)
 		contextTokens := dedupeTokens(append(tokenize(prev), tokenize(next)...))
 		s := overlapScore(fnTokens, contextTokens)
@@ -437,7 +449,7 @@ func gapWhyLine(root *analyzer.RootResult, fn *codegraph.FunctionNode, mode stri
 	if bestText == "" {
 		// Fallback wording when evidence is still meaningful but token overlap is weak.
 		if onReachablePath && hasExternalSignal && gapAlign == 0 {
-			gap := root.LargestGaps[0]
+			gap := evidenceGaps[0]
 			prev, next := neighborSpanNames(gap, root.MergedIntervals)
 			dur := formatDurationShort(gap.Duration)
 			suffix := ""
@@ -590,12 +602,12 @@ func errorTokens(spans []parser.Span) []string {
 	return dedupeTokens(all)
 }
 
-func gapContextTokens(root *analyzer.RootResult) []string {
-	if root == nil || len(root.LargestGaps) == 0 || len(root.MergedIntervals) == 0 {
+func gapContextTokens(root *analyzer.RootResult, evidenceGaps []analyzer.Gap) []string {
+	if root == nil || len(evidenceGaps) == 0 || len(root.MergedIntervals) == 0 {
 		return nil
 	}
 	all := make([]string, 0, 8)
-	for _, gap := range root.LargestGaps {
+	for _, gap := range evidenceGaps {
 		prev, next := neighborSpanNames(gap, root.MergedIntervals)
 		if prev != "" {
 			all = append(all, tokenize(prev)...)
@@ -687,11 +699,11 @@ func rootMetadataTokens(spans []parser.Span, root *analyzer.RootResult) []string
 	return dedupeTokens(root.RootSpan.MetadataTokens)
 }
 
-func primaryGapPrevSpanTokens(root *analyzer.RootResult) []string {
-	if root == nil || len(root.LargestGaps) == 0 || len(root.MergedIntervals) == 0 {
+func primaryGapPrevSpanTokens(root *analyzer.RootResult, evidenceGaps []analyzer.Gap) []string {
+	if root == nil || len(evidenceGaps) == 0 || len(root.MergedIntervals) == 0 {
 		return nil
 	}
-	gap := root.LargestGaps[0]
+	gap := evidenceGaps[0]
 	prev, _ := neighborSpanNames(gap, root.MergedIntervals)
 	if strings.TrimSpace(prev) == "" {
 		return nil
@@ -699,9 +711,46 @@ func primaryGapPrevSpanTokens(root *analyzer.RootResult) []string {
 	return tokenize(prev)
 }
 
-func primaryGapKind(root *analyzer.RootResult) string {
-	if root == nil || len(root.LargestGaps) == 0 {
+func primaryGapKind(evidenceGaps []analyzer.Gap) string {
+	if len(evidenceGaps) == 0 {
 		return ""
 	}
-	return strings.TrimSpace(root.LargestGaps[0].Kind)
+	return strings.TrimSpace(evidenceGaps[0].Kind)
+}
+
+func selectEvidenceGaps(root *analyzer.RootResult) []analyzer.Gap {
+	if root == nil || len(root.LargestGaps) == 0 {
+		return nil
+	}
+	if root.RootDuration <= 0 {
+		return []analyzer.Gap{root.LargestGaps[0]}
+	}
+	for _, g := range root.LargestGaps {
+		if g.Duration < minGapEvidenceDuration {
+			continue
+		}
+		r := float64(g.Duration) / float64(root.RootDuration)
+		if r < minGapEvidenceRatio {
+			continue
+		}
+		return []analyzer.Gap{g}
+	}
+	return []analyzer.Gap{root.LargestGaps[0]}
+}
+
+func isInternalHelperLike(fn *codegraph.FunctionNode) bool {
+	tokens := tokenize(fn.FuncName + " " + fn.FilePath + " " + fn.Package)
+	if len(tokens) == 0 {
+		return false
+	}
+	helperTerms := map[string]struct{}{
+		"helper": {}, "util": {}, "utils": {}, "common": {}, "internal": {}, "build": {}, "convert": {},
+		"format": {}, "map": {}, "normalize": {}, "prepare": {}, "compose": {}, "calc": {},
+	}
+	for _, t := range tokens {
+		if _, ok := helperTerms[t]; ok {
+			return true
+		}
+	}
+	return false
 }

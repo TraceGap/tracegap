@@ -319,3 +319,36 @@ func TestPrintRepoAnalysisText_SuccessModeUsesConsider(t *testing.T) {
 		t.Fatalf("expected Consider action label, got %q", out)
 	}
 }
+
+func TestPrintRepoAnalysisText_ErrorModeUsesStartHereOnly(t *testing.T) {
+	result := &repoanalysis.Result{
+		Enabled: true,
+		Mode:    "error-context",
+		Candidates: []repoanalysis.Candidate{
+			{
+				FilePath:   "internal/orders/repo.go",
+				Line:       9,
+				Function:   "orders.Save",
+				Confidence: repoanalysis.ConfidenceHigh,
+				Why:        []string{"Contains error handling behavior"},
+				ActionText: "Add instrumentation around orders.Save().",
+			},
+		},
+	}
+
+	var buf bytes.Buffer
+	PrintRepoAnalysisText(&buf, result)
+	out := buf.String()
+	if !strings.Contains(out, "Most suspicious uninstrumented code paths:") {
+		t.Fatalf("expected error-context heading, got %q", out)
+	}
+	if !strings.Contains(out, "Start here:") {
+		t.Fatalf("expected Start here action label, got %q", out)
+	}
+	if strings.Contains(out, "Likely instrumentation opportunities:") {
+		t.Fatalf("did not expect success heading in error mode, got %q", out)
+	}
+	if strings.Contains(out, "Consider:") {
+		t.Fatalf("did not expect Consider label in error mode, got %q", out)
+	}
+}
