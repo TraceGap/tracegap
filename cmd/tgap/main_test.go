@@ -11,7 +11,7 @@ import (
 )
 
 func TestParseArgs_ValidAuditJSON(t *testing.T) {
-	format, file, err := parseArgs([]string{"audit", "trace.json", "--format", "json"})
+	format, file, repo, err := parseArgs([]string{"audit", "trace.json", "--format", "json"})
 	if err != nil {
 		t.Fatalf("parseArgs failed: %v", err)
 	}
@@ -21,22 +21,25 @@ func TestParseArgs_ValidAuditJSON(t *testing.T) {
 	if file != "trace.json" {
 		t.Fatalf("expected trace.json, got %q", file)
 	}
+	if repo != "" {
+		t.Fatalf("expected empty repo, got %q", repo)
+	}
 }
 
 func TestParseArgs_MissingCommand(t *testing.T) {
-	if _, _, err := parseArgs([]string{}); err == nil {
+	if _, _, _, err := parseArgs([]string{}); err == nil {
 		t.Fatalf("expected error for missing command")
 	}
 }
 
 func TestParseArgs_UnknownFlag(t *testing.T) {
-	if _, _, err := parseArgs([]string{"audit", "trace.json", "--wat"}); err == nil {
+	if _, _, _, err := parseArgs([]string{"audit", "trace.json", "--wat"}); err == nil {
 		t.Fatalf("expected error for unknown flag")
 	}
 }
 
 func TestParseArgs_ValidAuditJSONEqualsForm(t *testing.T) {
-	format, file, err := parseArgs([]string{"audit", "trace.json", "--format=json"})
+	format, file, repo, err := parseArgs([]string{"audit", "trace.json", "--format=json"})
 	if err != nil {
 		t.Fatalf("parseArgs failed: %v", err)
 	}
@@ -46,10 +49,45 @@ func TestParseArgs_ValidAuditJSONEqualsForm(t *testing.T) {
 	if file != "trace.json" {
 		t.Fatalf("expected trace.json, got %q", file)
 	}
+	if repo != "" {
+		t.Fatalf("expected empty repo, got %q", repo)
+	}
+}
+
+func TestParseArgs_ValidRepoFlag(t *testing.T) {
+	format, file, repo, err := parseArgs([]string{"audit", "trace.json", "--repo", "."})
+	if err != nil {
+		t.Fatalf("parseArgs failed: %v", err)
+	}
+	if format != output.FormatText {
+		t.Fatalf("expected text format, got %s", format)
+	}
+	if file != "trace.json" {
+		t.Fatalf("expected trace.json, got %q", file)
+	}
+	if repo != "." {
+		t.Fatalf("expected repo '.', got %q", repo)
+	}
+}
+
+func TestParseArgs_ValidRepoEqualsForm(t *testing.T) {
+	_, _, repo, err := parseArgs([]string{"audit", "trace.json", "--repo=./svc"})
+	if err != nil {
+		t.Fatalf("parseArgs failed: %v", err)
+	}
+	if repo != "svc" {
+		t.Fatalf("expected cleaned repo 'svc', got %q", repo)
+	}
+}
+
+func TestParseArgs_MissingRepoValue(t *testing.T) {
+	if _, _, _, err := parseArgs([]string{"audit", "trace.json", "--repo"}); err == nil {
+		t.Fatalf("expected error for missing repo value")
+	}
 }
 
 func TestParseArgs_InvalidFormat(t *testing.T) {
-	if _, _, err := parseArgs([]string{"audit", "trace.json", "--format", "yaml"}); err == nil {
+	if _, _, _, err := parseArgs([]string{"audit", "trace.json", "--format", "yaml"}); err == nil {
 		t.Fatalf("expected invalid format error")
 	}
 }
