@@ -239,10 +239,10 @@ func TestPrintRepoAnalysisText_RendersCandidates(t *testing.T) {
 				Function:   "payment.(*PaymentClient).Charge",
 				Confidence: repoanalysis.ConfidenceHigh,
 				Why: []string{
-					"On a reachable path from matched entrypoint",
-					"No span detected in function body",
+					"On a reachable path from checkout.request",
+					"No span detected in this function",
 				},
-				StartHere: "Add or verify instrumentation around Charge()",
+				ActionText: "Add or verify instrumentation around payment.Charge()",
 			},
 		},
 	}
@@ -252,12 +252,14 @@ func TestPrintRepoAnalysisText_RendersCandidates(t *testing.T) {
 	out := buf.String()
 
 	checks := []string{
-		"Repo Analysis",
-		"Matched root span: internal/checkout/handler.go:31",
+		"Repo Analysis (Go)",
+		"Matched root span:",
+		"internal/checkout/handler.go:31",
 		"Most suspicious uninstrumented code paths:",
 		"internal/payment/client.go:42",
 		"Confidence: high",
-		"Start here: Add or verify instrumentation around Charge()",
+		"Start here:",
+		"Add or verify instrumentation around payment.Charge()",
 	}
 	for _, want := range checks {
 		if !strings.Contains(out, want) {
@@ -285,5 +287,35 @@ func TestPrintRepoAnalysisText_WeakSignalAndNoCandidates(t *testing.T) {
 	}
 	if !strings.Contains(out, "No confident candidates found.") {
 		t.Fatalf("expected no candidates message, got %q", out)
+	}
+}
+
+func TestPrintRepoAnalysisText_SuccessModeUsesConsider(t *testing.T) {
+	result := &repoanalysis.Result{
+		Enabled: true,
+		Mode:    "instrumentation-opportunity",
+		Candidates: []repoanalysis.Candidate{
+			{
+				FilePath:    "internal/orders/repo.go",
+				Line:        9,
+				Function:    "orders.Save",
+				Confidence:  repoanalysis.ConfidenceHigh,
+				Why:         []string{"No span detected in this function"},
+				ActionText:  "Add a span around orders.Save() to improve trace coverage.",
+			},
+		},
+	}
+
+	var buf bytes.Buffer
+	PrintRepoAnalysisText(&buf, result)
+	out := buf.String()
+	if !strings.Contains(out, "Repo Analysis (Go)") {
+		t.Fatalf("expected go-specific header, got %q", out)
+	}
+	if !strings.Contains(out, "Likely instrumentation opportunities:") {
+		t.Fatalf("expected instrumentation opportunities heading, got %q", out)
+	}
+	if !strings.Contains(out, "Consider:") {
+		t.Fatalf("expected Consider action label, got %q", out)
 	}
 }

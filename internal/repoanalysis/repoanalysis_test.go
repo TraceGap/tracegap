@@ -120,6 +120,38 @@ func TestAnalyze_CheckoutFixture_ErrorAndSuccessModes(t *testing.T) {
 	if !strings.Contains(errorResult.Candidates[0].FilePath, "internal/payment/client.go") {
 		t.Fatalf("expected payment client as top candidate, got %q", errorResult.Candidates[0].FilePath)
 	}
+	handlerSeen := false
+	for _, c := range errorResult.Candidates {
+		if strings.Contains(c.FilePath, "internal/checkout/handler.go") {
+			handlerSeen = true
+			break
+		}
+	}
+	if handlerSeen {
+		t.Fatalf("expected matched entrypoint handler to be excluded when evidence is weak")
+	}
+
+	hasHTTPLabel := false
+	hasDBLabel := false
+	for _, c := range errorResult.Candidates {
+		for _, why := range c.Why {
+			if strings.Contains(why, "Performs likely outbound HTTP call: http.Client.Do") {
+				hasHTTPLabel = true
+			}
+			if strings.Contains(why, "Performs likely database operation: ExecContext") {
+				hasDBLabel = true
+			}
+			if strings.Contains(why, "No span detected in function body") {
+				t.Fatalf("unexpected legacy no-span wording: %q", why)
+			}
+		}
+	}
+	if !hasHTTPLabel {
+		t.Fatalf("expected normalized HTTP evidence label")
+	}
+	if !hasDBLabel {
+		t.Fatalf("expected normalized DB evidence label")
+	}
 
 	successSpans, _, err := parser.ParseFile(successTrace)
 	if err != nil {
@@ -139,6 +171,17 @@ func TestAnalyze_CheckoutFixture_ErrorAndSuccessModes(t *testing.T) {
 	}
 	if !strings.Contains(successResult.Candidates[0].FilePath, "internal/payment/client.go") {
 		t.Fatalf("expected payment client as top candidate in success trace, got %q", successResult.Candidates[0].FilePath)
+	}
+	hasSuccessGapWording := false
+	for _, c := range successResult.Candidates {
+		for _, why := range c.Why {
+			if strings.Contains(why, "May explain the") {
+				hasSuccessGapWording = true
+			}
+		}
+	}
+	if !hasSuccessGapWording {
+		t.Fatalf("expected success trace candidates to include 'May explain the ... gap' wording when aligned")
 	}
 }
 

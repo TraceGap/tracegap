@@ -92,10 +92,11 @@ func PrintRepoAnalysisText(w io.Writer, result *repoanalysis.Result) {
 	}
 
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Repo Analysis")
+	fmt.Fprintln(w, "Repo Analysis (Go)")
 
 	if result.MatchedRoot != nil {
-		fmt.Fprintf(w, "Matched root span: %s:%d\n", result.MatchedRoot.FilePath, result.MatchedRoot.Line)
+		fmt.Fprintln(w, "Matched root span:")
+		fmt.Fprintf(w, "%s:%d\n", result.MatchedRoot.FilePath, result.MatchedRoot.Line)
 		fmt.Fprintf(w, "Function: %s\n", result.MatchedRoot.Function)
 		fmt.Fprintf(w, "Confidence: %s\n", string(result.MatchedRoot.Confidence))
 	}
@@ -123,7 +124,12 @@ func PrintRepoAnalysisText(w io.Writer, result *repoanalysis.Result) {
 		for _, why := range cand.Why {
 			fmt.Fprintf(w, "   - %s\n", why)
 		}
-		fmt.Fprintf(w, "   Start here: %s\n", cand.StartHere)
+		if result.Mode == "error-context" {
+			fmt.Fprintln(w, "   Start here:")
+		} else {
+			fmt.Fprintln(w, "   Consider:")
+		}
+		fmt.Fprintf(w, "   %s\n", cand.ActionText)
 	}
 }
 

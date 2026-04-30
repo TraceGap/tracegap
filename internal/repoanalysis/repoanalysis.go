@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"tracegap/internal/analyzer"
 	"tracegap/internal/codegraph"
@@ -56,7 +57,7 @@ type Candidate struct {
 	Function    string
 	Confidence  Confidence
 	Why         []string
-	StartHere   string
+	ActionText  string
 	Score       float64
 }
 
@@ -101,6 +102,7 @@ func Analyze(repoPath string, audit analyzer.AuditResult, spans []parser.Span) (
 	entry := matcher.MatchRootSpan(rootName, graph)
 	entryNode := graph.Functions[entry.FunctionID]
 	entryConfidence := mapMatcherConfidence(entry.Confidence)
+	entryID := entry.FunctionID
 
 	if entryNode != nil {
 		result.MatchedRoot = &MatchedRoot{
@@ -127,7 +129,7 @@ func Analyze(repoPath string, audit analyzer.AuditResult, spans []parser.Span) (
 	candidates := make([]Candidate, 0, 16)
 	for _, id := range graph.SortedIDs() {
 		fn := graph.Functions[id]
-		cand, ok := scoreCandidate(fn, id, reachable, result.WeakSignal, rootTokens, gapTokens, errorTokens)
+		cand, ok := scoreCandidate(fn, id, entryID, rootName, result.Mode, audit.PrimaryRoot, reachable, result.WeakSignal, rootTokens, gapTokens, errorTokens)
 		if !ok {
 			continue
 		}
@@ -174,6 +176,10 @@ func mapMatcherConfidence(c matcher.Confidence) Confidence {
 func scoreCandidate(
 	fn *codegraph.FunctionNode,
 	id codegraph.FunctionID,
+	entryID codegraph.FunctionID,
+	rootName string,
+	mode string,
+	root *analyzer.RootResult,
 	reachable map[codegraph.FunctionID]struct{},
 	weakSignal bool,
 	rootTokens, gapTokens, errorTokens []string,
@@ -185,7 +191,7 @@ func scoreCandidate(
 	score := 0.0
 	why := make([]string, 0, 6)
 	score += weightNoSpan
-	why = append(why, "No span detected in function body")
+	why = append(why, "No span detected in this function")
 
 	extStrength := float64(fn.ExternalOps.Count)
 	if extStrength > 0 {
@@ -193,17 +199,27 @@ func scoreCandidate(
 			extStrength = 2
 		}
 		score += weightExternalOperation * extStrength
-		why = append(why, "Performs likely external operation: "+strings.Join(fn.ExternalOps.Reasons, ", "))
+		why = append(why, externalReasonLine(fn.ExternalOps.Reasons))
 	}
 
+	onReachablePath := false
 	if _, ok := reachable[id]; ok {
+		onReachablePath = true
 		score += weightReachablePath
-		why = append(why, "On a reachable path from matched entrypoint")
+		if strings.TrimSpace(rootName) != "" {
+			why = append(why, "On a reachable path from "+rootName)
+		} else {
+			why = append(why, "On a reachable path from matched entrypoint")
+		}
 	}
 
 	gapAlign := overlapScore(tokenize(fn.FuncName+" "+fn.FilePath+" "+fn.Package), gapTokens)
 	if gapAlign > 0 {
 		score += weightGapAlignment * gapAlign
+	}
+	if line, ok := gapWhyLine(root, fn, mode, onReachablePath, extStrength > 0, gapAlign); ok {
+		why = append(why, line)
+	} else if gapAlign > 0 {
 		why = append(why, "Semantics align with largest trace gaps")
 	}
 
@@ -222,6 +238,18 @@ func scoreCandidate(
 	if fn.HandlesError {
 		score += weightErrorHandling
 		why = append(why, "Contains error handling behavior")
+	}
+
+	hasIndependentSignal := extStrength > 0 || gapAlign >= 0.25 || errorAlign >= 0.25 || (fn.HandlesError && (extStrength > 0 || gapAlign > 0 || errorAlign > 0))
+	if !hasIndependentSignal {
+		// Exclude candidates that are only "reachable + no span" noise.
+		return Candidate{}, false
+	}
+
+	isEntrypoint := id == entryID
+	hasStrongIndependentSignal := extStrength > 0 || gapAlign >= 0.6 || errorAlign >= 0.6 || (fn.HandlesError && (extStrength > 0 || gapAlign >= 0.4 || errorAlign >= 0.4))
+	if isEntrypoint && !hasStrongIndependentSignal {
+		return Candidate{}, false
 	}
 
 	if weakSignal {
@@ -244,13 +272,177 @@ func scoreCandidate(
 		Function:   fn.QualifiedName,
 		Confidence: confidenceFromScore(score),
 		Why:        why,
-		StartHere:  "Add or verify instrumentation around " + fn.FuncName + "()",
+		ActionText: actionTextForMode(mode, fn),
 		Score:      score,
 	}
 	if weakSignal {
 		cand.Confidence = ConfidenceLow
 	}
 	return cand, true
+}
+
+func actionTextForMode(mode string, fn *codegraph.FunctionNode) string {
+	name := functionLabel(fn)
+	if mode == "instrumentation-opportunity" {
+		return "Add a span around " + name + " to improve trace coverage."
+	}
+	return "Add or verify instrumentation around " + name
+}
+
+func functionLabel(fn *codegraph.FunctionNode) string {
+	if strings.TrimSpace(fn.Package) == "" {
+		return fn.FuncName + "()"
+	}
+	if strings.TrimSpace(fn.Receiver) != "" {
+		return fn.Package + ".(*" + fn.Receiver + ")." + fn.FuncName + "()"
+	}
+	return fn.Package + "." + fn.FuncName + "()"
+}
+
+func externalReasonLine(reasons []string) string {
+	if len(reasons) == 0 {
+		return "Performs likely external operation"
+	}
+	hasHTTP := false
+	hasDB := false
+	hasQueue := false
+	hasRPC := false
+	detail := ""
+
+	for _, reason := range reasons {
+		r := strings.TrimSpace(reason)
+		switch r {
+		case "Do", "http.Do", "http.Client.Do":
+			hasHTTP = true
+			detail = "http.Client.Do"
+		case "http.Get":
+			hasHTTP = true
+			detail = "http.Get"
+		case "http.Post":
+			hasHTTP = true
+			detail = "http.Post"
+		case "ExecContext", "QueryContext", "QueryRowContext":
+			hasDB = true
+			detail = r
+		case "Publish", "Send", "Produce", "Enqueue":
+			hasQueue = true
+			detail = r
+		default:
+			if strings.Contains(strings.ToLower(r), "client") || strings.Contains(strings.ToLower(r), "grpc") {
+				hasRPC = true
+			}
+		}
+	}
+
+	switch {
+	case hasHTTP:
+		if detail == "" {
+			detail = "http.Client.Do"
+		}
+		return "Performs likely outbound HTTP call: " + detail
+	case hasDB:
+		if detail == "" {
+			detail = "ExecContext"
+		}
+		return "Performs likely database operation: " + detail
+	case hasQueue:
+		if detail == "" {
+			detail = "Publish"
+		}
+		return "Performs likely queue/event operation: " + detail
+	case hasRPC:
+		return "Performs likely gRPC/client call"
+	default:
+		return "Performs likely external operation"
+	}
+}
+
+func gapWhyLine(root *analyzer.RootResult, fn *codegraph.FunctionNode, mode string, onReachablePath bool, hasExternalSignal bool, gapAlign float64) (string, bool) {
+	if root == nil || len(root.LargestGaps) == 0 || len(root.MergedIntervals) == 0 {
+		return "", false
+	}
+	fnTokens := tokenize(fn.FuncName + " " + fn.FilePath + " " + fn.Package)
+	bestScore := 0.0
+	bestText := ""
+	for _, gap := range root.LargestGaps {
+		prev, next := neighborSpanNames(gap, root.MergedIntervals)
+		contextTokens := dedupeTokens(append(tokenize(prev), tokenize(next)...))
+		s := overlapScore(fnTokens, contextTokens)
+		if s <= bestScore || s == 0 {
+			continue
+		}
+		bestScore = s
+		dur := formatDurationShort(gap.Duration)
+		suffix := ""
+		switch {
+		case gap.Kind == "after_last" && prev != "":
+			suffix = "after " + prev
+		case gap.Kind == "before_first" && next != "":
+			suffix = "before " + next
+		case prev != "" && next != "":
+			suffix = "between " + prev + " and " + next
+		}
+		if mode == "instrumentation-opportunity" {
+			if suffix != "" {
+				bestText = "May explain the " + dur + " gap " + suffix
+			} else {
+				bestText = "May explain the " + dur + " gap"
+			}
+		} else {
+			if suffix != "" {
+				bestText = "Aligns with " + dur + " gap " + suffix
+			} else {
+				bestText = "Aligns with " + dur + " gap"
+			}
+		}
+	}
+	if bestText == "" {
+		// Fallback wording when evidence is still meaningful but token overlap is weak.
+		if onReachablePath && hasExternalSignal && gapAlign == 0 {
+			gap := root.LargestGaps[0]
+			prev, next := neighborSpanNames(gap, root.MergedIntervals)
+			dur := formatDurationShort(gap.Duration)
+			suffix := ""
+			switch {
+			case gap.Kind == "after_last" && prev != "":
+				suffix = "after " + prev
+			case gap.Kind == "before_first" && next != "":
+				suffix = "before " + next
+			case prev != "" && next != "":
+				suffix = "between " + prev + " and " + next
+			}
+			if mode == "instrumentation-opportunity" {
+				if suffix != "" {
+					return "May explain the " + dur + " gap " + suffix, true
+				}
+				return "May explain the " + dur + " gap", true
+			}
+			if suffix != "" {
+				return "Aligns with " + dur + " gap " + suffix, true
+			}
+			return "Aligns with " + dur + " gap", true
+		}
+		return "", false
+	}
+	return bestText, true
+}
+
+func formatDurationShort(d time.Duration) string {
+	if d <= 0 {
+		return "0ms"
+	}
+	if d >= time.Second {
+		seconds := float64(d) / float64(time.Second)
+		if seconds == float64(int64(seconds)) {
+			return fmt.Sprintf("%.0fs", seconds)
+		}
+		return fmt.Sprintf("%.2fs", seconds)
+	}
+	ms := d.Milliseconds()
+	if ms > 0 {
+		return fmt.Sprintf("%dms", ms)
+	}
+	return fmt.Sprintf("%dµs", d.Microseconds())
 }
 
 func walkReachable(graph *codegraph.Graph, start codegraph.FunctionID, depthLimit int) map[codegraph.FunctionID]struct{} {

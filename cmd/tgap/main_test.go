@@ -205,8 +205,14 @@ func TestRun_CheckoutFixtureRepoAnalysisModes(t *testing.T) {
 			t.Fatalf("error trace run exit code: got %d want %d", got, want)
 		}
 	})
+	if !strings.Contains(errorOutput, "Repo Analysis (Go)") {
+		t.Fatalf("expected go repo analysis heading, got %q", errorOutput)
+	}
 	if !strings.Contains(errorOutput, "Most suspicious uninstrumented code paths:") {
 		t.Fatalf("expected suspicious paths heading, got %q", errorOutput)
+	}
+	if !strings.Contains(errorOutput, "Start here:") {
+		t.Fatalf("expected Start here action label for error mode, got %q", errorOutput)
 	}
 	if !strings.Contains(errorOutput, "internal/payment/client.go") {
 		t.Fatalf("expected payment client candidate in error output, got %q", errorOutput)
@@ -219,6 +225,9 @@ func TestRun_CheckoutFixtureRepoAnalysisModes(t *testing.T) {
 	})
 	if !strings.Contains(successOutput, "Likely instrumentation opportunities:") {
 		t.Fatalf("expected instrumentation opportunities heading, got %q", successOutput)
+	}
+	if !strings.Contains(successOutput, "Consider:") {
+		t.Fatalf("expected Consider action label for success mode, got %q", successOutput)
 	}
 	if !strings.Contains(successOutput, "internal/payment/client.go") {
 		t.Fatalf("expected payment client candidate in success output, got %q", successOutput)
