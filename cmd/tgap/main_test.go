@@ -195,6 +195,36 @@ func TestRun_HelpCommand(t *testing.T) {
 	}
 }
 
+func TestRun_CheckoutFixtureRepoAnalysisModes(t *testing.T) {
+	repo := filepath.Join("..", "..", "examples", "checkout-go")
+	errorTrace := filepath.Join(repo, "traces", "checkout-error.json")
+	successTrace := filepath.Join(repo, "traces", "checkout-success.json")
+
+	errorOutput := captureStdout(t, func() {
+		if got, want := run([]string{"audit", errorTrace, "--repo", repo}), exitSuccess; got != want {
+			t.Fatalf("error trace run exit code: got %d want %d", got, want)
+		}
+	})
+	if !strings.Contains(errorOutput, "Most suspicious uninstrumented code paths:") {
+		t.Fatalf("expected suspicious paths heading, got %q", errorOutput)
+	}
+	if !strings.Contains(errorOutput, "internal/payment/client.go") {
+		t.Fatalf("expected payment client candidate in error output, got %q", errorOutput)
+	}
+
+	successOutput := captureStdout(t, func() {
+		if got, want := run([]string{"audit", successTrace, "--repo", repo}), exitSuccess; got != want {
+			t.Fatalf("success trace run exit code: got %d want %d", got, want)
+		}
+	})
+	if !strings.Contains(successOutput, "Likely instrumentation opportunities:") {
+		t.Fatalf("expected instrumentation opportunities heading, got %q", successOutput)
+	}
+	if !strings.Contains(successOutput, "internal/payment/client.go") {
+		t.Fatalf("expected payment client candidate in success output, got %q", successOutput)
+	}
+}
+
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
 

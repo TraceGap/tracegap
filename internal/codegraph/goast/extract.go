@@ -28,13 +28,15 @@ func DefaultOptions() Options {
 }
 
 type rawCall struct {
-	name string
+	name         string
+	packageHint  string
 }
 
 type pendingNode struct {
-	node     *codegraph.FunctionNode
-	pkg      string
-	rawCalls []rawCall
+	node       *codegraph.FunctionNode
+	pkg        string
+	rawCalls   []rawCall
+	importPkgs map[string]string
 }
 
 func BuildGraph(repoPath string, opts Options) (*codegraph.Graph, error) {
@@ -99,7 +101,7 @@ func BuildGraph(repoPath string, opts Options) (*codegraph.Graph, error) {
 			node.StartsSpan = startsSpan
 			node.ExternalOps = externalOps
 			node.HandlesError = handlesErr
-			pending = append(pending, pendingNode{node: node, pkg: parsed.Name.Name, rawCalls: calls})
+			pending = append(pending, pendingNode{node: node, pkg: parsed.Name.Name, rawCalls: calls, importPkgs: imports})
 
 			graph.Functions[id] = node
 			graph.ByName[fnName] = append(graph.ByName[fnName], id)
@@ -116,6 +118,9 @@ func BuildGraph(repoPath string, opts Options) (*codegraph.Graph, error) {
 		seen := make(map[codegraph.FunctionID]struct{})
 		for _, rc := range item.rawCalls {
 			resolved := pkgNameIndex[item.pkg][rc.name]
+			if len(resolved) == 0 && rc.packageHint != "" {
+				resolved = pkgNameIndex[rc.packageHint][rc.name]
+			}
 			if len(resolved) == 0 {
 				item.node.UnresolvedCalls = append(item.node.UnresolvedCalls, rc.name)
 				continue
@@ -243,9 +248,9 @@ func analyzeBody(fn *ast.FuncDecl, imports map[string]string) ([]rawCall, bool, 
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		switch x := n.(type) {
 		case *ast.CallExpr:
-			name := callName(x)
-			if name != "" {
-				calls = append(calls, rawCall{name: name})
+			rc := callRef(x, imports)
+			if rc.name != "" {
+				calls = append(calls, rc)
 			}
 			if isSpanStartCall(x) {
 				startsSpan = true
@@ -282,14 +287,23 @@ func analyzeBody(fn *ast.FuncDecl, imports map[string]string) ([]rawCall, bool, 
 	return calls, startsSpan, external, handlesErr
 }
 
-func callName(call *ast.CallExpr) string {
+func callRef(call *ast.CallExpr, imports map[string]string) rawCall {
 	switch fun := call.Fun.(type) {
 	case *ast.Ident:
-		return fun.Name
+		return rawCall{name: fun.Name}
 	case *ast.SelectorExpr:
-		return fun.Sel.Name
+		out := rawCall{name: fun.Sel.Name}
+		if ident, ok := fun.X.(*ast.Ident); ok {
+			if importPath, imported := imports[ident.Name]; imported {
+				parts := strings.Split(importPath, "/")
+				if len(parts) > 0 {
+					out.packageHint = parts[len(parts)-1]
+				}
+			}
+		}
+		return out
 	default:
-		return ""
+		return rawCall{}
 	}
 }
 

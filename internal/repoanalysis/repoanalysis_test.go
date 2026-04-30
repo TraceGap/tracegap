@@ -3,6 +3,7 @@ package repoanalysis
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -78,7 +79,7 @@ func (c *C) Do() error { return nil }
 
 	audit := analyzer.AuditResult{}
 	audit.Roots = []analyzer.RootResult{{
-		RootSpan: parser.Span{Name: "checkout.request"},
+		RootSpan:    parser.Span{Name: "checkout.request"},
 		LargestGaps: []analyzer.Gap{{Duration: 300 * time.Millisecond}},
 	}}
 	audit.PrimaryRoot = &audit.Roots[0]
@@ -92,6 +93,52 @@ func (c *C) Do() error { return nil }
 	}
 	if len(res.Candidates) > maxCandidateCount {
 		t.Fatalf("expected max %d candidates, got %d", maxCandidateCount, len(res.Candidates))
+	}
+}
+
+func TestAnalyze_CheckoutFixture_ErrorAndSuccessModes(t *testing.T) {
+	repoPath := filepath.Join("..", "..", "examples", "checkout-go")
+	errorTrace := filepath.Join(repoPath, "traces", "checkout-error.json")
+	successTrace := filepath.Join(repoPath, "traces", "checkout-success.json")
+
+	errorSpans, _, err := parser.ParseFile(errorTrace)
+	if err != nil {
+		t.Fatalf("parse error trace failed: %v", err)
+	}
+	errorAudit := analyzer.Analyze(errorSpans, analyzer.DefaultTimelineWidth)
+
+	errorResult, err := Analyze(repoPath, errorAudit, errorSpans)
+	if err != nil {
+		t.Fatalf("Analyze error trace failed: %v", err)
+	}
+	if errorResult.Mode != "error-context" {
+		t.Fatalf("expected error-context mode, got %q", errorResult.Mode)
+	}
+	if len(errorResult.Candidates) == 0 {
+		t.Fatalf("expected candidates for error trace")
+	}
+	if !strings.Contains(errorResult.Candidates[0].FilePath, "internal/payment/client.go") {
+		t.Fatalf("expected payment client as top candidate, got %q", errorResult.Candidates[0].FilePath)
+	}
+
+	successSpans, _, err := parser.ParseFile(successTrace)
+	if err != nil {
+		t.Fatalf("parse success trace failed: %v", err)
+	}
+	successAudit := analyzer.Analyze(successSpans, analyzer.DefaultTimelineWidth)
+
+	successResult, err := Analyze(repoPath, successAudit, successSpans)
+	if err != nil {
+		t.Fatalf("Analyze success trace failed: %v", err)
+	}
+	if successResult.Mode != "instrumentation-opportunity" {
+		t.Fatalf("expected instrumentation-opportunity mode, got %q", successResult.Mode)
+	}
+	if len(successResult.Candidates) == 0 {
+		t.Fatalf("expected candidates for success trace")
+	}
+	if !strings.Contains(successResult.Candidates[0].FilePath, "internal/payment/client.go") {
+		t.Fatalf("expected payment client as top candidate in success trace, got %q", successResult.Candidates[0].FilePath)
 	}
 }
 

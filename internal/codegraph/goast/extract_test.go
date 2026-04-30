@@ -102,6 +102,47 @@ func TestBuildGraph_RespectsIgnoreAndFileSize(t *testing.T) {
 	}
 }
 
+func TestBuildGraph_ResolvesCrossPackageCalls(t *testing.T) {
+	repo := t.TempDir()
+	mustWrite(t, filepath.Join(repo, "go.mod"), "module example.com/test\n")
+	mustWrite(t, filepath.Join(repo, "internal", "checkout", "handler.go"), `package checkout
+
+import "example.com/test/internal/payment"
+
+func SubmitOrderHandler() error {
+    return payment.Charge()
+}
+`)
+	mustWrite(t, filepath.Join(repo, "internal", "payment", "client.go"), `package payment
+
+import "net/http"
+
+func Charge() error {
+    _, _ = http.Get("https://payments.internal/charge")
+    return nil
+}
+`)
+
+	graph, err := BuildGraph(repo, DefaultOptions())
+	if err != nil {
+		t.Fatalf("BuildGraph failed: %v", err)
+	}
+
+	handler := findByName(t, graph, "SubmitOrderHandler")
+	charge := findByName(t, graph, "Charge")
+
+	found := false
+	for _, call := range handler.LocalCalls {
+		if call == charge.ID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected handler to resolve local call to payment.Charge")
+	}
+}
+
 func findByName(t *testing.T, graph *codegraph.Graph, name string) *codegraph.FunctionNode {
 	t.Helper()
 	ids := graph.ByName[name]
