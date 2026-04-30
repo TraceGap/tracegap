@@ -237,7 +237,9 @@ func scoreCandidate(
 
 	if fn.HandlesError {
 		score += weightErrorHandling
-		why = append(why, "Contains error handling behavior")
+		if mode == "error-context" {
+			why = append(why, "Contains error handling behavior")
+		}
 	}
 
 	hasIndependentSignal := extStrength > 0 || gapAlign >= 0.25 || errorAlign >= 0.25 || (fn.HandlesError && (extStrength > 0 || gapAlign > 0 || errorAlign > 0))
@@ -358,7 +360,7 @@ func externalReasonLine(reasons []string) string {
 }
 
 func gapWhyLine(root *analyzer.RootResult, fn *codegraph.FunctionNode, mode string, onReachablePath bool, hasExternalSignal bool, gapAlign float64) (string, bool) {
-	if root == nil || len(root.LargestGaps) == 0 || len(root.MergedIntervals) == 0 {
+	if root == nil || len(root.LargestGaps) == 0 || len(root.MergedIntervals) == 0 || !fn.HandlesError {
 		return "", false
 	}
 	fnTokens := tokenize(fn.FuncName + " " + fn.FilePath + " " + fn.Package)

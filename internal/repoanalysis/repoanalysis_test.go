@@ -173,15 +173,29 @@ func TestAnalyze_CheckoutFixture_ErrorAndSuccessModes(t *testing.T) {
 		t.Fatalf("expected payment client as top candidate in success trace, got %q", successResult.Candidates[0].FilePath)
 	}
 	hasSuccessGapWording := false
+	ordersHasGapClaim := false
+	hasSuccessErrorHandlingBullet := false
 	for _, c := range successResult.Candidates {
 		for _, why := range c.Why {
 			if strings.Contains(why, "May explain the") {
 				hasSuccessGapWording = true
 			}
+			if strings.Contains(why, "Contains error handling behavior") {
+				hasSuccessErrorHandlingBullet = true
+			}
+			if strings.Contains(c.FilePath, "internal/orders/repo.go") && (strings.Contains(why, "May explain the") || strings.Contains(why, "Aligns with")) {
+				ordersHasGapClaim = true
+			}
 		}
 	}
 	if !hasSuccessGapWording {
 		t.Fatalf("expected success trace candidates to include 'May explain the ... gap' wording when aligned")
+	}
+	if ordersHasGapClaim {
+		t.Fatalf("expected orders.Save to avoid gap alignment claim without strong alignment evidence")
+	}
+	if hasSuccessErrorHandlingBullet {
+		t.Fatalf("expected success trace output to omit error-handling evidence bullet")
 	}
 }
 

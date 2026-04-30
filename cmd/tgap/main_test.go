@@ -217,6 +217,9 @@ func TestRun_CheckoutFixtureRepoAnalysisModes(t *testing.T) {
 	if !strings.Contains(errorOutput, "internal/payment/client.go") {
 		t.Fatalf("expected payment client candidate in error output, got %q", errorOutput)
 	}
+	if strings.Contains(errorOutput, "note: 1 child span(s) skipped due to missing timestamps") {
+		t.Fatalf("unexpected skipped-child timing note in fixture error output: %q", errorOutput)
+	}
 
 	successOutput := captureStdout(t, func() {
 		if got, want := run([]string{"audit", successTrace, "--repo", repo}), exitSuccess; got != want {
