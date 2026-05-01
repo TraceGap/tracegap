@@ -483,6 +483,88 @@ func Charge(ctx context.Context) error {
 		t.Fatalf("expected largest-gap aligned external operation to rank first, got %q", res.Candidates[0].FilePath)
 	}
 }
+
+func TestAnalyze_MatchedEntrypointExcludedEvenWithBasicExternalOp(t *testing.T) {
+	repo := t.TempDir()
+	mustWrite(t, filepath.Join(repo, "go.mod"), "module example.com/x\n")
+	mustWrite(t, filepath.Join(repo, "internal", "api", "handler.go"), `package api
+
+import (
+	"context"
+	"net/http"
+	"example.com/x/internal/payment"
+)
+
+func HandleCheckout(ctx context.Context) error {
+	_, _ = http.NewRequestWithContext(ctx, http.MethodGet, "https://health.local", nil)
+	return payment.PostJSON(ctx)
+}
+`)
+	mustWrite(t, filepath.Join(repo, "internal", "payment", "gateway.go"), `package payment
+
+import (
+	"context"
+	"net/http"
+)
+
+func PostJSON(ctx context.Context) error {
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://payments.local/charge", nil)
+	_, err := http.DefaultClient.Do(req)
+	return err
+}
+`)
+
+	base := time.Unix(0, 0)
+	spans := []parser.Span{
+		{ID: "root", Name: "checkout.request", Start: base, End: base.Add(time.Second), HasStart: true, HasEnd: true},
+		{ID: "c1", ParentID: "root", Name: "inventory.reserve", Start: base, End: base.Add(600 * time.Millisecond), HasStart: true, HasEnd: true},
+	}
+	audit := analyzer.Analyze(spans, analyzer.DefaultTimelineWidth)
+
+	res, err := Analyze(repo, audit, spans)
+	if err != nil {
+		t.Fatalf("Analyze failed: %v", err)
+	}
+	for _, c := range res.Candidates {
+		if strings.Contains(c.FilePath, "internal/api/handler.go") {
+			t.Fatalf("expected matched root entrypoint to be excluded by default even with basic external-op signal")
+		}
+	}
+}
+
+func TestAnalyze_ErrorModeFromMetadataTokens(t *testing.T) {
+	repo := t.TempDir()
+	mustWrite(t, filepath.Join(repo, "go.mod"), "module example.com/x\n")
+	mustWrite(t, filepath.Join(repo, "internal", "payment", "gateway.go"), `package payment
+
+import (
+	"context"
+	"net/http"
+)
+
+func PostJSON(ctx context.Context) error {
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://payments.local/charge", nil)
+	_, err := http.DefaultClient.Do(req)
+	return err
+}
+`)
+
+	base := time.Unix(0, 0)
+	spans := []parser.Span{
+		{ID: "root", Name: "checkout.request", Start: base, End: base.Add(time.Second), HasStart: true, HasEnd: true, MetadataTokens: []string{"status", "500", "error"}},
+		{ID: "c1", ParentID: "root", Name: "inventory.reserve", Start: base, End: base.Add(600 * time.Millisecond), HasStart: true, HasEnd: true},
+	}
+	audit := analyzer.Analyze(spans, analyzer.DefaultTimelineWidth)
+
+	res, err := Analyze(repo, audit, spans)
+	if err != nil {
+		t.Fatalf("Analyze failed: %v", err)
+	}
+	if res.Mode != "error-context" {
+		t.Fatalf("expected error-context mode from metadata tokens, got %q", res.Mode)
+	}
+}
+
 func mustWrite(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

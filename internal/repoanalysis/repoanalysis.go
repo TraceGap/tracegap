@@ -29,12 +29,14 @@ const (
 	weightGapAlignment        = 2.2
 	weightErrorContextAlign   = 1.8
 	weightSemanticRootAlign   = 1.2
+	weightSemanticSignal      = 1.4
 	weightErrorHandling       = 0.8
 	weightGapAfterDownstream  = 1.6
 	penaltyChildSpanSemantic  = 2.0
 	penaltyGapPrevSpanMatch   = 3.0
 	penaltyWeakEvidence       = 1.5
 	penaltyNoEntrypointPath   = 1.0
+	penaltyEntrypointBias     = 2.5
 
 	thresholdHighConfidence         = 8.5
 	thresholdMediumConfidence       = 5.5
@@ -229,6 +231,11 @@ func scoreCandidate(
 	}
 
 	semanticTokens := tokenize(fn.FuncName + " " + fn.FilePath + " " + fn.Package)
+	semanticSignal := downstreamSemanticSignal(fn, semanticTokens)
+	if semanticSignal > 0 {
+		score += weightSemanticSignal * semanticSignal
+		why = append(why, "Contains downstream/retry/client semantics")
+	}
 	gapAlign := overlapScore(semanticTokens, gapTokens)
 	if gapAlign > 0 {
 		score += weightGapAlignment * gapAlign
@@ -277,16 +284,20 @@ func scoreCandidate(
 		}
 	}
 
-	hasIndependentSignal := extStrength > 0 || gapAlign >= 0.25 || errorAlign >= 0.25 || (fn.HandlesError && (extStrength > 0 || gapAlign > 0 || errorAlign > 0))
-	if !hasIndependentSignal {
+	hasRequiredEvidence := extStrength > 0 || gapAlign >= 0.65 || errorAlign >= 0.45 || semanticSignal >= 0.60
+	if !hasRequiredEvidence {
 		// Exclude candidates that are only "reachable + no span" noise.
 		return Candidate{}, false
 	}
 
 	isEntrypoint := id == entryID
-	hasStrongIndependentSignal := extStrength > 0 || gapAlign >= 0.6 || errorAlign >= 0.6 || (fn.HandlesError && (extStrength > 0 || gapAlign >= 0.4 || errorAlign >= 0.4))
-	if isEntrypoint && !hasStrongIndependentSignal {
-		return Candidate{}, false
+	if isEntrypoint {
+		// The matched root should usually be context, not a candidate.
+		veryStrongBoundaryEvidence := extStrength >= 1 && (gapAlign >= 0.85 || errorAlign >= 0.75 || semanticSignal >= 0.90) && (fn.HandlesError || semanticSignal >= 0.95)
+		if !veryStrongBoundaryEvidence {
+			return Candidate{}, false
+		}
+		score -= penaltyEntrypointBias
 	}
 
 	if childAlign >= 0.65 && extStrength == 0 && gapAlign < 0.45 && errorAlign == 0 {
@@ -296,6 +307,14 @@ func scoreCandidate(
 	if prevGapChildAlign >= 0.7 && childAlign >= 0.5 && gapAlign < 0.6 && errorAlign == 0 {
 		// For gaps after known child spans, suppress candidates that map back to that already-instrumented child path.
 		return Candidate{}, false
+	}
+	if primaryGapKind == "after_last" && prevGapChildAlign >= 0.55 {
+		independentFromPrev := errorAlign >= 0.65 || (semanticSignal >= 0.80 && extStrength > 0 && (gapAlign-prevGapChildAlign) >= 0.20)
+		if !independentFromPrev {
+			// Gap-after-X should not point back to X unless there is very strong independent evidence.
+			return Candidate{}, false
+		}
+		score -= penaltyGapPrevSpanMatch * prevGapChildAlign
 	}
 	if primaryGapKind == "after_last" && prevGapChildAlign >= 0.5 && extStrength > 0 && gapAlign < 0.7 && errorAlign == 0 {
 		// Do not top-rank operations that strongly map to the already-instrumented preceding span.
@@ -526,12 +545,28 @@ func walkReachable(graph *codegraph.Graph, start codegraph.FunctionID, depthLimi
 
 func analysisMode(spans []parser.Span) string {
 	for _, sp := range spans {
-		name := strings.ToLower(sp.Name)
-		if strings.Contains(name, "error") || strings.Contains(name, "exception") || strings.Contains(name, "fail") {
+		if spanHasErrorSignal(sp) {
 			return "error-context"
 		}
 	}
 	return "instrumentation-opportunity"
+}
+
+func spanHasErrorSignal(sp parser.Span) bool {
+	name := strings.ToLower(sp.Name)
+	if strings.Contains(name, "error") || strings.Contains(name, "exception") || strings.Contains(name, "fail") {
+		return true
+	}
+	for _, tok := range sp.MetadataTokens {
+		t := strings.ToLower(strings.TrimSpace(tok))
+		if t == "" {
+			continue
+		}
+		if strings.Contains(t, "error") || strings.Contains(t, "exception") || strings.Contains(t, "fail") || strings.Contains(t, "panic") || strings.Contains(t, "timeout") || t == "500" || strings.Contains(t, "5xx") {
+			return true
+		}
+	}
+	return false
 }
 
 func tokenize(s string) []string {
@@ -609,11 +644,22 @@ func gapContextTokens(root *analyzer.RootResult, evidenceGaps []analyzer.Gap) []
 	all := make([]string, 0, 8)
 	for _, gap := range evidenceGaps {
 		prev, next := neighborSpanNames(gap, root.MergedIntervals)
-		if prev != "" {
-			all = append(all, tokenize(prev)...)
-		}
-		if next != "" {
-			all = append(all, tokenize(next)...)
+		switch strings.TrimSpace(gap.Kind) {
+		case "after_last":
+			if next != "" {
+				all = append(all, tokenize(next)...)
+			}
+		case "before_first":
+			if next != "" {
+				all = append(all, tokenize(next)...)
+			}
+		default:
+			if prev != "" {
+				all = append(all, tokenize(prev)...)
+			}
+			if next != "" {
+				all = append(all, tokenize(next)...)
+			}
 		}
 	}
 	return dedupeTokens(all)
@@ -753,4 +799,25 @@ func isInternalHelperLike(fn *codegraph.FunctionNode) bool {
 		}
 	}
 	return false
+}
+
+func downstreamSemanticSignal(fn *codegraph.FunctionNode, tokens []string) float64 {
+	score := 0.0
+	if fn.ExternalOps.Queue || fn.ExternalOps.DB || fn.ExternalOps.RPC || fn.ExternalOps.HTTP {
+		score += 0.35
+	}
+	semanticTerms := map[string]float64{
+		"retry": 0.35, "backoff": 0.35, "queue": 0.35, "storage": 0.35, "client": 0.30,
+		"gateway": 0.30, "transport": 0.30, "publish": 0.30, "save": 0.25, "persist": 0.25,
+		"fraud": 0.25, "order": 0.20,
+	}
+	for _, t := range tokens {
+		if w, ok := semanticTerms[t]; ok {
+			score += w
+		}
+	}
+	if score > 1.0 {
+		return 1.0
+	}
+	return score
 }
