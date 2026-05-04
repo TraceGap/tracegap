@@ -2,6 +2,7 @@ package analyzer
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -100,6 +101,67 @@ func TestAnalyze_SkipsChildrenMissingTimestamps(t *testing.T) {
 	}
 	if !result.PrimaryRoot.PositionalAvailable {
 		t.Fatalf("expected positional analysis to be available")
+	}
+}
+
+func TestAnalyze_AsyncInsight_DetectsWebPlusConsumer(t *testing.T) {
+	rootStart := time.Unix(0, 0)
+	rootEnd := time.Unix(0, int64(time.Second))
+	asyncStart := time.Unix(0, int64(2*time.Second))
+	asyncEnd := time.Unix(0, int64(3*time.Second))
+
+	spans := []parser.Span{
+		{ID: "req", Name: "signup.request", Start: rootStart, End: rootEnd, HasStart: true, HasEnd: true, MetadataTokens: []string{"signup", "request"}},
+		{ID: "child", ParentID: "req", Name: "auth", Start: rootStart, End: time.Unix(0, int64(20*time.Millisecond)), HasStart: true, HasEnd: true},
+		{ID: "consume", Name: "stream.consume", Start: asyncStart, End: asyncEnd, HasStart: true, HasEnd: true, MetadataTokens: []string{"stream", "consume"}},
+	}
+
+	result := Analyze(spans, 80)
+	if !result.AsyncInsight.Detected {
+		t.Fatalf("expected async insight to be detected")
+	}
+	if got, want := result.AsyncInsight.PrimaryRootName, "signup.request"; got != want {
+		t.Fatalf("primary root: got %q want %q", got, want)
+	}
+	if got, want := result.AsyncInsight.SecondaryRootName, "stream.consume"; got != want {
+		t.Fatalf("secondary root: got %q want %q", got, want)
+	}
+	if !strings.Contains(result.AsyncInsight.SecondaryClassification, "consumer") &&
+		!strings.Contains(result.AsyncInsight.SecondaryClassification, "stream") {
+		t.Fatalf("expected consumer/stream classification, got %q", result.AsyncInsight.SecondaryClassification)
+	}
+	if !result.AsyncInsight.PrimaryEndsEarly {
+		t.Fatalf("expected primary to be flagged as ending early (large after_last gap)")
+	}
+}
+
+func TestAnalyze_AsyncInsight_SingleRootNoBlock(t *testing.T) {
+	rootStart := time.Unix(0, 0)
+	rootEnd := time.Unix(0, int64(time.Second))
+
+	spans := []parser.Span{
+		{ID: "req", Name: "signup.request", Start: rootStart, End: rootEnd, HasStart: true, HasEnd: true, MetadataTokens: []string{"signup", "request"}},
+	}
+
+	result := Analyze(spans, 80)
+	if result.AsyncInsight.Detected {
+		t.Fatalf("did not expect async insight on single-root trace")
+	}
+}
+
+func TestAnalyze_AsyncInsight_MultiRootNoAsyncSignals(t *testing.T) {
+	rootStart := time.Unix(0, 0)
+	rootEnd := time.Unix(0, int64(time.Second))
+	other := time.Unix(0, int64(2*time.Second))
+
+	spans := []parser.Span{
+		{ID: "a", Name: "auth.verify", Start: rootStart, End: rootEnd, HasStart: true, HasEnd: true, MetadataTokens: []string{"auth", "verify"}},
+		{ID: "b", Name: "user.lookup", Start: other, End: other.Add(time.Second), HasStart: true, HasEnd: true, MetadataTokens: []string{"user", "lookup"}},
+	}
+
+	result := Analyze(spans, 80)
+	if result.AsyncInsight.Detected {
+		t.Fatalf("did not expect async insight when no web+async signals present")
 	}
 }
 

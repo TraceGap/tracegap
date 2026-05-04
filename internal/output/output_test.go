@@ -222,6 +222,120 @@ func buildMask(width int, covered [][2]int) []bool {
 	return mask
 }
 
+func TestPrintAuditText_AsyncInsight_PrintsBlock(t *testing.T) {
+	t.Setenv("TGAP_ASCII", "1")
+	primary := analyzer.RootResult{
+		RootSpan:     parser.Span{ID: "req", Name: "signup.request"},
+		RootDuration: time.Second,
+		LargestGaps: []analyzer.Gap{
+			{StartOffset: 200 * time.Millisecond, EndOffset: time.Second, Duration: 800 * time.Millisecond, Kind: "after_last"},
+		},
+		Timeline: analyzer.TimelineData{Width: 10, Mask: buildMask(10, [][2]int{{0, 2}})},
+	}
+	secondary := analyzer.RootResult{
+		RootSpan:     parser.Span{ID: "consume", Name: "stream.consume"},
+		RootDuration: time.Second,
+		Timeline:     analyzer.TimelineData{Width: 10, Mask: buildMask(10, [][2]int{{0, 10}})},
+	}
+	result := analyzer.AuditResult{
+		DetectedSchema: "otlp",
+		Roots:          []analyzer.RootResult{primary, secondary},
+		AsyncInsight: analyzer.AsyncInsight{
+			Detected:                true,
+			PrimaryRootName:         "signup.request",
+			SecondaryRootName:       "stream.consume",
+			SecondaryClassification: "worker/consumer work",
+			PrimaryEndsEarly:        true,
+		},
+	}
+	result.PrimaryRoot = &result.Roots[0]
+
+	var buf bytes.Buffer
+	PrintAuditText(&buf, result)
+	out := buf.String()
+
+	wants := []string{
+		"Async execution detected:",
+		"signup.request and stream.consume are separate root spans",
+		"stream.consume appears to be worker/consumer work",
+		"this work is not linked as a child of signup.request",
+		"Likely visibility gap:",
+		"Start here:",
+		"Propagate trace context",
+	}
+	for _, w := range wants {
+		if !strings.Contains(out, w) {
+			t.Fatalf("expected output to contain %q, got:\n%s", w, out)
+		}
+	}
+
+	// Probabilistic language and no certainty claims.
+	for _, soft := range []string{"likely", "may", "appears"} {
+		if !strings.Contains(strings.ToLower(out), soft) {
+			t.Fatalf("expected probabilistic language %q in output, got:\n%s", soft, out)
+		}
+	}
+	if strings.Contains(strings.ToLower(out), "root cause") {
+		t.Fatalf("did not expect %q claim, got:\n%s", "root cause", out)
+	}
+
+	// Block must appear before the CTA.
+	idxBlock := strings.Index(out, "Async execution detected:")
+	idxCTA := strings.Index(out, "Find where this missing time comes from:")
+	if idxBlock < 0 || idxCTA < 0 || idxBlock > idxCTA {
+		t.Fatalf("expected async block to precede CTA; block=%d cta=%d", idxBlock, idxCTA)
+	}
+}
+
+func TestPrintAuditText_AsyncInsight_AbsentWhenNotDetected(t *testing.T) {
+	t.Setenv("TGAP_ASCII", "1")
+	result := analyzer.AuditResult{
+		DetectedSchema: "otlp",
+		Roots: []analyzer.RootResult{{
+			RootSpan:     parser.Span{ID: "r1", Name: "checkout.request"},
+			RootDuration: time.Second,
+			Timeline:     analyzer.TimelineData{Width: 10, Mask: buildMask(10, [][2]int{{0, 5}})},
+		}},
+	}
+	result.PrimaryRoot = &result.Roots[0]
+
+	var buf bytes.Buffer
+	PrintAuditText(&buf, result)
+	if strings.Contains(buf.String(), "Async execution detected:") {
+		t.Fatalf("did not expect async block in single-root output, got:\n%s", buf.String())
+	}
+}
+
+func TestPrintAuditText_AsyncInsight_EndToEndFromAnalyzer(t *testing.T) {
+	t.Setenv("TGAP_ASCII", "1")
+	rootStart := time.Unix(0, 0)
+	rootEnd := time.Unix(0, int64(time.Second))
+	asyncStart := time.Unix(0, int64(2*time.Second))
+	asyncEnd := time.Unix(0, int64(3*time.Second))
+
+	spans := []parser.Span{
+		{ID: "req", Name: "signup.request", Start: rootStart, End: rootEnd, HasStart: true, HasEnd: true, MetadataTokens: []string{"signup", "request"}},
+		{ID: "child", ParentID: "req", Name: "auth", Start: rootStart, End: time.Unix(0, int64(20*time.Millisecond)), HasStart: true, HasEnd: true},
+		{ID: "cons", Name: "stream.consume", Start: asyncStart, End: asyncEnd, HasStart: true, HasEnd: true, MetadataTokens: []string{"stream", "consume"}},
+	}
+	result := analyzer.Analyze(spans, 80)
+
+	var buf bytes.Buffer
+	PrintAuditText(&buf, result)
+	out := buf.String()
+
+	for _, want := range []string{
+		"Async execution detected:",
+		"signup.request",
+		"stream.consume",
+		"trace context",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected end-to-end output to contain %q, got:\n%s", want, out)
+		}
+	}
+}
+
 func TestPrintRepoAnalysisText_RendersCandidates(t *testing.T) {
 	result := &repoanalysis.Result{
 		Enabled: true,

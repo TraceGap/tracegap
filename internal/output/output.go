@@ -80,6 +80,8 @@ func PrintAuditText(w io.Writer, result analyzer.AuditResult) {
 		}
 	}
 
+	printAsyncInsight(w, result.AsyncInsight)
+
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Find where this missing time comes from:")
 	fmt.Fprintln(w, "https://tracegap.io")
@@ -199,6 +201,33 @@ func printFlowText(w io.Writer, flow *repoanalysis.FlowResult, mode string) {
 		}
 		fmt.Fprintf(w, "   %s\n", cand.ActionText)
 	}
+}
+
+func printAsyncInsight(w io.Writer, insight analyzer.AsyncInsight) {
+	if !insight.Detected {
+		return
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Async execution detected:")
+	fmt.Fprintf(w, "- %s and %s are separate root spans\n", insight.PrimaryRootName, insight.SecondaryRootName)
+	classification := strings.TrimSpace(insight.SecondaryClassification)
+	if classification == "" {
+		classification = "async/event work"
+	}
+	fmt.Fprintf(w, "- %s appears to be %s\n", insight.SecondaryRootName, classification)
+	fmt.Fprintf(w, "- this work is not linked as a child of %s\n", insight.PrimaryRootName)
+
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Likely visibility gap:")
+	if insight.PrimaryEndsEarly {
+		fmt.Fprintln(w, "Your request trace appears to end early. The missing work likely moved into async processing and may not be connected to the request trace.")
+	} else {
+		fmt.Fprintln(w, "Your request trace may end before async processing is fully connected.")
+	}
+
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Start here:")
+	fmt.Fprintln(w, "Propagate trace context across the stream/queue boundary and instrument the publish/consume path.")
 }
 
 func severityMessage(missingPct int) string {

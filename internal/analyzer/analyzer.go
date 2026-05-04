@@ -71,6 +71,7 @@ type AuditResult struct {
 	DetectedSchema string
 	Roots          []RootResult
 	PrimaryRoot    *RootResult
+	AsyncInsight   AsyncInsight
 }
 
 func Analyze(spans []parser.Span, width int) AuditResult {
@@ -104,6 +105,7 @@ func Analyze(spans []parser.Span, width int) AuditResult {
 	if len(results) > 0 {
 		result.PrimaryRoot = &result.Roots[0]
 	}
+	result.AsyncInsight = detectAsyncInsight(result.Roots)
 	return result
 }
 
