@@ -257,10 +257,18 @@ func datadogTraceEntries(root any) []any {
 	switch v := root.(type) {
 	case map[string]any:
 		if traces, ok := v["traces"].([]any); ok {
+			if looksLikeDatadogSpanArray(traces) {
+				// Flat span list under "traces": treat as a single trace.
+				return []any{traces}
+			}
 			return traces
 		}
 		return nil
 	case []any:
+		if looksLikeDatadogSpanArray(v) {
+			// Flat top-level span list: treat as a single trace.
+			return []any{v}
+		}
 		return v
 	default:
 		return nil

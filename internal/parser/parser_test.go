@@ -134,6 +134,119 @@ func TestParseFile_DatadogMixedTopLevelArrayParses(t *testing.T) {
 	}
 }
 
+func TestParseFile_DatadogFlatTopLevelArrayParses(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "flat-datadog.json")
+	data := []byte(`[
+	  {"trace_id":"123","span_id":"1","parent_id":"0","name":"signup.request","start":1700000000000000,"duration":1000},
+	  {"trace_id":"123","span_id":"2","parent_id":"1","name":"signup.db","start":1700000000000100,"duration":200},
+	  {"trace_id":"123","span_id":"3","parent_id":"1","name":"signup.mail","start":1700000000000200,"duration":200}
+	]`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("failed to write fixture: %v", err)
+	}
+
+	spans, schema, err := ParseFile(path)
+	if err != nil {
+		t.Fatalf("ParseFile failed: %v", err)
+	}
+	if schema != SchemaDatadog {
+		t.Fatalf("expected datadog schema, got %s", schema)
+	}
+	if len(spans) != 3 {
+		t.Fatalf("expected 3 spans, got %d", len(spans))
+	}
+}
+
+func TestParseFile_DatadogNestedArrayStillParses(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nested-datadog.json")
+	data := []byte(`[
+	  [
+	    {"trace_id":"x","span_id":"11","parent_id":"0","name":"stream.consume","start":1700000001000000,"duration":500},
+	    {"trace_id":"x","span_id":"12","parent_id":"11","name":"stream.handle","start":1700000001000100,"duration":200}
+	  ]
+	]`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("failed to write fixture: %v", err)
+	}
+
+	spans, schema, err := ParseFile(path)
+	if err != nil {
+		t.Fatalf("ParseFile failed: %v", err)
+	}
+	if schema != SchemaDatadog {
+		t.Fatalf("expected datadog schema, got %s", schema)
+	}
+	if len(spans) != 2 {
+		t.Fatalf("expected 2 spans, got %d", len(spans))
+	}
+}
+
+func TestParseFile_DatadogParentIDNullTreatedAsRoot(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "null-parent-datadog.json")
+	data := []byte(`[
+	  {"trace_id":"123","span_id":"1","parent_id":null,"name":"signup.request","start":1700000000000000,"duration":1000},
+	  {"trace_id":"123","span_id":"2","parent_id":"1","name":"signup.db","start":1700000000000100,"duration":200}
+	]`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("failed to write fixture: %v", err)
+	}
+
+	spans, schema, err := ParseFile(path)
+	if err != nil {
+		t.Fatalf("ParseFile failed: %v", err)
+	}
+	if schema != SchemaDatadog {
+		t.Fatalf("expected datadog schema, got %s", schema)
+	}
+	if len(spans) != 2 {
+		t.Fatalf("expected 2 spans, got %d", len(spans))
+	}
+	if spans[0].ID == "1" && spans[0].ParentID != "" {
+		t.Fatalf("expected null parent_id to be treated as root, got %q", spans[0].ParentID)
+	}
+	foundRoot := false
+	for _, sp := range spans {
+		if sp.ID == "1" {
+			foundRoot = true
+			if sp.ParentID != "" {
+				t.Fatalf("expected root parent to be empty, got %q", sp.ParentID)
+			}
+		}
+	}
+	if !foundRoot {
+		t.Fatalf("expected to find span id 1")
+	}
+}
+
+func TestParseFile_DatadogStringAndNumericIDsBothParse(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mixed-id-types-datadog.json")
+	data := []byte(`[
+	  {"trace_id":999,"span_id":1,"parent_id":0,"name":"signup.request","start":1700000000000000,"duration":1000},
+	  {"trace_id":"999","span_id":"2","parent_id":1,"name":"signup.child","start":1700000000000100,"duration":200}
+	]`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("failed to write fixture: %v", err)
+	}
+
+	spans, schema, err := ParseFile(path)
+	if err != nil {
+		t.Fatalf("ParseFile failed: %v", err)
+	}
+	if schema != SchemaDatadog {
+		t.Fatalf("expected datadog schema, got %s", schema)
+	}
+	if len(spans) != 2 {
+		t.Fatalf("expected 2 spans, got %d", len(spans))
+	}
+	ids := map[string]bool{}
+	for _, sp := range spans {
+		ids[sp.ID] = true
+	}
+	if !ids["1"] || !ids["2"] {
+		t.Fatalf("expected ids 1 and 2, got %+v", ids)
+	}
+}
+
 func TestParseFile_DatadogTopLevelMultipleValidArrays(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "multi-datadog.json")
 	data := []byte(`[
