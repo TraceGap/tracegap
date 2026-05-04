@@ -352,3 +352,31 @@ func TestPrintRepoAnalysisText_ErrorModeUsesStartHereOnly(t *testing.T) {
 		t.Fatalf("did not expect Consider label in error mode, got %q", out)
 	}
 }
+
+func TestPrintRepoAnalysisText_RendersMultipleMatchedRoots(t *testing.T) {
+	result := &repoanalysis.Result{
+		Enabled: true,
+		Mode:    "instrumentation-opportunity",
+		MatchedRoots: []repoanalysis.MatchedRoot{
+			{FilePath: "internal/api/handler.go", Line: 56, Function: "api.(*Handler).handleCheckout", Confidence: repoanalysis.ConfidenceHigh},
+			{FilePath: "internal/stream/consumer.go", Line: 21, Function: "stream.(*Consumer).consume", Confidence: repoanalysis.ConfidenceMedium},
+		},
+		Candidates: []repoanalysis.Candidate{{
+			FilePath: "internal/payment/gateway.go", Line: 21, Function: "payment.(*HTTPTransport).PostJSON", Confidence: repoanalysis.ConfidenceHigh,
+			Why: []string{"No span detected in this function"}, ActionText: "Add a span around payment.(*HTTPTransport).PostJSON() to improve trace coverage.",
+		}},
+	}
+
+	var buf bytes.Buffer
+	PrintRepoAnalysisText(&buf, result)
+	out := buf.String()
+	for _, want := range []string{
+		"Matched root spans:",
+		"1. internal/api/handler.go:56",
+		"2. internal/stream/consumer.go:21",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected output to contain %q, got %q", want, out)
+		}
+	}
+}

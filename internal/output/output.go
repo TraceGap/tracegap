@@ -94,7 +94,14 @@ func PrintRepoAnalysisText(w io.Writer, result *repoanalysis.Result) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Repo Analysis (Go)")
 
-	if result.MatchedRoot != nil {
+	if len(result.MatchedRoots) > 1 {
+		fmt.Fprintln(w, "Matched root spans:")
+		for i, mr := range result.MatchedRoots {
+			fmt.Fprintf(w, "%d. %s:%d\n", i+1, mr.FilePath, mr.Line)
+			fmt.Fprintf(w, "   Function: %s\n", mr.Function)
+			fmt.Fprintf(w, "   Confidence: %s\n", string(mr.Confidence))
+		}
+	} else if result.MatchedRoot != nil {
 		fmt.Fprintln(w, "Matched root span:")
 		fmt.Fprintf(w, "%s:%d\n", result.MatchedRoot.FilePath, result.MatchedRoot.Line)
 		fmt.Fprintf(w, "Function: %s\n", result.MatchedRoot.Function)

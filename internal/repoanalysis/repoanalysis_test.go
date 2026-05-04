@@ -565,6 +565,68 @@ func PostJSON(ctx context.Context) error {
 	}
 }
 
+func TestAnalyze_MultiRootAsyncContextsProduceCandidates(t *testing.T) {
+	repo := t.TempDir()
+	mustWrite(t, filepath.Join(repo, "go.mod"), "module example.com/x\n")
+	mustWrite(t, filepath.Join(repo, "internal", "api", "handler.go"), `package api
+
+import "context"
+
+func HandleSignup(ctx context.Context) error { return nil }
+`)
+	mustWrite(t, filepath.Join(repo, "internal", "stream", "consumer.go"), `package stream
+
+import "context"
+
+func Consume(ctx context.Context) error { return nil }
+`)
+	mustWrite(t, filepath.Join(repo, "internal", "payment", "gateway.go"), `package payment
+
+import (
+	"context"
+	"net/http"
+)
+
+func PostJSON(ctx context.Context) error {
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://payments.local/signup", nil)
+	_, err := http.DefaultClient.Do(req)
+	return err
+}
+`)
+	mustWrite(t, filepath.Join(repo, "internal", "stream", "sink.go"), `package stream
+
+import (
+	"context"
+	"database/sql"
+)
+
+func SaveOffset(ctx context.Context, db *sql.DB) error {
+	_, err := db.ExecContext(ctx, "INSERT INTO offsets(v) VALUES(1)")
+	return err
+}
+`)
+
+	base := time.Unix(0, 0)
+	spans := []parser.Span{
+		{ID: "r1", Name: "signup.request", Start: base, End: base.Add(time.Second), HasStart: true, HasEnd: true},
+		{ID: "r1c1", ParentID: "r1", Name: "auth", Start: base, End: base.Add(250 * time.Millisecond), HasStart: true, HasEnd: true},
+		{ID: "r2", Name: "stream.consume", Start: base.Add(1500 * time.Millisecond), End: base.Add(2500 * time.Millisecond), HasStart: true, HasEnd: true},
+		{ID: "r2c1", ParentID: "r2", Name: "decode", Start: base.Add(1500 * time.Millisecond), End: base.Add(1800 * time.Millisecond), HasStart: true, HasEnd: true},
+	}
+	audit := analyzer.Analyze(spans, analyzer.DefaultTimelineWidth)
+
+	res, err := Analyze(repo, audit, spans)
+	if err != nil {
+		t.Fatalf("Analyze failed: %v", err)
+	}
+	if len(res.MatchedRoots) < 2 {
+		t.Fatalf("expected multiple matched roots, got %d", len(res.MatchedRoots))
+	}
+	if len(res.Candidates) == 0 {
+		t.Fatalf("expected candidates from multi-root analysis")
+	}
+}
+
 func mustWrite(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

@@ -76,7 +76,24 @@ type Result struct {
 	WeakSignal        bool
 	WeakSignalMessage string
 	MatchedRoot       *MatchedRoot
+	MatchedRoots      []MatchedRoot
 	Candidates        []Candidate
+}
+
+type rootContext struct {
+	root                 *analyzer.RootResult
+	rootName             string
+	entryID              codegraph.FunctionID
+	entryNode            *codegraph.FunctionNode
+	entryConfidence      Confidence
+	entryReasons         []string
+	reachable            map[codegraph.FunctionID]struct{}
+	weakSignal           bool
+	rootTokens           []string
+	childTokens          []string
+	gapTokens            []string
+	primaryGapPrevTokens []string
+	primaryGapKind       string
 }
 
 func Analyze(repoPath string, audit analyzer.AuditResult, spans []parser.Span) (*Result, error) {
@@ -103,50 +120,71 @@ func Analyze(repoPath string, audit analyzer.AuditResult, spans []parser.Span) (
 		return result, nil
 	}
 
-	rootName := ""
-	if audit.PrimaryRoot != nil {
-		rootName = audit.PrimaryRoot.RootSpan.Name
+	contexts := buildRootContexts(audit, spans, graph)
+	if len(contexts) == 0 {
+		result.WeakSignal = true
+		result.WeakSignalMessage = "Weak signal: no root spans available for repo-aware matching."
+		return result, nil
 	}
-	rootMetaTokens := rootMetadataTokens(spans, audit.PrimaryRoot)
-	childNames := directChildSpanNames(spans, audit.PrimaryRoot)
-	entry := matcher.MatchRootSpan(rootName, rootMetaTokens, childNames, graph)
-	entryNode := graph.Functions[entry.FunctionID]
-	entryConfidence := mapMatcherConfidence(entry.Confidence)
-	entryID := entry.FunctionID
 
-	if entryNode != nil {
-		result.MatchedRoot = &MatchedRoot{
-			FilePath:   entryNode.FilePath,
-			Line:       entryNode.StartLine,
-			Function:   entryNode.QualifiedName,
-			Confidence: entryConfidence,
-			Why:        append([]string(nil), entry.Reasons...),
+	matchedRoots := make([]MatchedRoot, 0, len(contexts))
+	anyConfident := false
+	for _, ctx := range contexts {
+		if ctx.entryNode == nil {
+			continue
+		}
+		matchedRoots = append(matchedRoots, MatchedRoot{
+			FilePath:   ctx.entryNode.FilePath,
+			Line:       ctx.entryNode.StartLine,
+			Function:   ctx.entryNode.QualifiedName,
+			Confidence: ctx.entryConfidence,
+			Why:        append([]string(nil), ctx.entryReasons...),
+		})
+		if ctx.entryConfidence == ConfidenceHigh || ctx.entryConfidence == ConfidenceMedium {
+			anyConfident = true
 		}
 	}
+	if len(matchedRoots) > 0 {
+		sort.Slice(matchedRoots, func(i, j int) bool {
+			ci := confidenceRank(matchedRoots[i].Confidence)
+			cj := confidenceRank(matchedRoots[j].Confidence)
+			if ci == cj {
+				if matchedRoots[i].FilePath == matchedRoots[j].FilePath {
+					return matchedRoots[i].Line < matchedRoots[j].Line
+				}
+				return matchedRoots[i].FilePath < matchedRoots[j].FilePath
+			}
+			return ci > cj
+		})
+		result.MatchedRoots = matchedRoots
+		result.MatchedRoot = &result.MatchedRoots[0]
+	}
 
-	reachable := map[codegraph.FunctionID]struct{}{}
-	if entryConfidence == ConfidenceHigh || entryConfidence == ConfidenceMedium {
-		reachable = walkReachable(graph, entry.FunctionID, maxDepth)
-	} else {
+	if !anyConfident {
 		result.WeakSignal = true
 		result.WeakSignalMessage = "Weak signal: no confident root entrypoint match found, so reachable-path claims are intentionally omitted."
 	}
 
-	rootTokens := dedupeTokens(append(tokenize(rootName), rootMetaTokens...))
-	childTokens := tokenize(strings.Join(childNames, " "))
-	evidenceGaps := selectEvidenceGaps(audit.PrimaryRoot)
-	gapTokens := gapContextTokens(audit.PrimaryRoot, evidenceGaps)
-	primaryGapPrevTokens := primaryGapPrevSpanTokens(audit.PrimaryRoot, evidenceGaps)
-	primaryGapKind := primaryGapKind(evidenceGaps)
 	errorTokens := errorTokens(spans)
 
-	candidates := make([]Candidate, 0, 16)
-	for _, id := range graph.SortedIDs() {
-		fn := graph.Functions[id]
-		cand, ok := scoreCandidate(fn, id, entryID, rootName, result.Mode, audit.PrimaryRoot, evidenceGaps, primaryGapPrevTokens, primaryGapKind, reachable, result.WeakSignal, rootTokens, childTokens, gapTokens, errorTokens)
-		if !ok {
-			continue
+	candidateByKey := map[string]Candidate{}
+	for _, ctx := range contexts {
+		for _, id := range graph.SortedIDs() {
+			fn := graph.Functions[id]
+			cand, ok := scoreCandidate(fn, id, ctx.entryID, ctx.rootName, result.Mode, ctx.root, selectEvidenceGaps(ctx.root), ctx.primaryGapPrevTokens, ctx.primaryGapKind, ctx.reachable, ctx.weakSignal, ctx.rootTokens, ctx.childTokens, ctx.gapTokens, errorTokens)
+			if !ok {
+				continue
+			}
+			key := candidateKey(cand)
+			existing, exists := candidateByKey[key]
+			if !exists || cand.Score > existing.Score {
+				candidateByKey[key] = cand
+			}
 		}
+	}
+
+	candidates := make([]Candidate, 0, len(candidateByKey))
+	for _, cand := range candidateByKey {
 		candidates = append(candidates, cand)
 	}
 
@@ -174,6 +212,68 @@ func Analyze(repoPath string, audit analyzer.AuditResult, spans []parser.Span) (
 	result.Candidates = candidates[:limit]
 
 	return result, nil
+}
+
+func buildRootContexts(audit analyzer.AuditResult, spans []parser.Span, graph *codegraph.Graph) []rootContext {
+	roots := make([]*analyzer.RootResult, 0, len(audit.Roots))
+	for i := range audit.Roots {
+		roots = append(roots, &audit.Roots[i])
+	}
+	if len(roots) == 0 && audit.PrimaryRoot != nil {
+		roots = append(roots, audit.PrimaryRoot)
+	}
+	if len(roots) == 0 {
+		return nil
+	}
+	contexts := make([]rootContext, 0, len(roots))
+	for _, root := range roots {
+		if root == nil {
+			continue
+		}
+		rootName := strings.TrimSpace(root.RootSpan.Name)
+		rootMetaTokens := rootMetadataTokens(spans, root)
+		childNames := directChildSpanNames(spans, root)
+		entry := matcher.MatchRootSpan(rootName, rootMetaTokens, childNames, graph)
+		entryConfidence := mapMatcherConfidence(entry.Confidence)
+		reachable := map[codegraph.FunctionID]struct{}{}
+		weak := true
+		if entryConfidence == ConfidenceHigh || entryConfidence == ConfidenceMedium {
+			reachable = walkReachable(graph, entry.FunctionID, maxDepth)
+			weak = false
+		}
+		evidenceGaps := selectEvidenceGaps(root)
+		contexts = append(contexts, rootContext{
+			root:                 root,
+			rootName:             rootName,
+			entryID:              entry.FunctionID,
+			entryNode:            graph.Functions[entry.FunctionID],
+			entryConfidence:      entryConfidence,
+			entryReasons:         append([]string(nil), entry.Reasons...),
+			reachable:            reachable,
+			weakSignal:           weak,
+			rootTokens:           dedupeTokens(append(tokenize(rootName), rootMetaTokens...)),
+			childTokens:          tokenize(strings.Join(childNames, " ")),
+			gapTokens:            gapContextTokens(root, evidenceGaps),
+			primaryGapPrevTokens: primaryGapPrevSpanTokens(root, evidenceGaps),
+			primaryGapKind:       primaryGapKind(evidenceGaps),
+		})
+	}
+	return contexts
+}
+
+func confidenceRank(c Confidence) int {
+	switch c {
+	case ConfidenceHigh:
+		return 3
+	case ConfidenceMedium:
+		return 2
+	default:
+		return 1
+	}
+}
+
+func candidateKey(c Candidate) string {
+	return c.FilePath + "|" + fmt.Sprintf("%d", c.Line) + "|" + c.Function
 }
 
 func mapMatcherConfidence(c matcher.Confidence) Confidence {
