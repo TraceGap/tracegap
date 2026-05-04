@@ -237,6 +237,81 @@ func TestRun_CheckoutFixtureRepoAnalysisModes(t *testing.T) {
 	}
 }
 
+func TestRun_RepoAnalysisModeFallbackFromStatusCode(t *testing.T) {
+	repo := filepath.Join("..", "..", "examples", "checkout-go")
+	traceFile := filepath.Join(t.TempDir(), "status-error.json")
+	traceJSON := `{
+  "resourceSpans": [
+    {
+      "scopeSpans": [
+        {
+          "spans": [
+            {
+              "spanId": "root",
+              "name": "checkout.request",
+              "startTimeUnixNano": "0",
+              "endTimeUnixNano": "1000000000",
+              "status": {"code": 2}
+            },
+            {
+              "spanId": "c1",
+              "parentSpanId": "root",
+              "name": "auth",
+              "startTimeUnixNano": "0",
+              "endTimeUnixNano": "200000000"
+            },
+            {
+              "spanId": "c2",
+              "parentSpanId": "root",
+              "name": "inventory.reserve",
+              "startTimeUnixNano": "400000000",
+              "endTimeUnixNano": "700000000"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}`
+	if err := os.WriteFile(traceFile, []byte(traceJSON), 0o600); err != nil {
+		t.Fatalf("write trace fixture failed: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		if got, want := run([]string{"audit", traceFile, "--repo", repo}), exitSuccess; got != want {
+			t.Fatalf("run exit code: got %d want %d", got, want)
+		}
+	})
+	if !strings.Contains(out, "Most suspicious uninstrumented code paths:") {
+		t.Fatalf("expected error heading via fallback detection, got %q", out)
+	}
+	if strings.Contains(out, "Likely instrumentation opportunities:") {
+		t.Fatalf("did not expect success heading for fallback-detected error trace, got %q", out)
+	}
+}
+
+func TestTraceFileHasErrorSignal_StatusCodeAndBoolean(t *testing.T) {
+	dir := t.TempDir()
+	errorPath := filepath.Join(dir, "error.json")
+	okPath := filepath.Join(dir, "ok.json")
+
+	errJSON := `{"status":{"code":2},"meta":{"error":true}}`
+	okJSON := `{"status":{"code":1},"meta":{"error":false}}`
+	if err := os.WriteFile(errorPath, []byte(errJSON), 0o600); err != nil {
+		t.Fatalf("write error fixture failed: %v", err)
+	}
+	if err := os.WriteFile(okPath, []byte(okJSON), 0o600); err != nil {
+		t.Fatalf("write ok fixture failed: %v", err)
+	}
+
+	if !traceFileHasErrorSignal(errorPath) {
+		t.Fatalf("expected error signal from status/error keys")
+	}
+	if traceFileHasErrorSignal(okPath) {
+		t.Fatalf("did not expect error signal for non-error status")
+	}
+}
+
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
 

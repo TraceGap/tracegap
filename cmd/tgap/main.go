@@ -1,10 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"tracegap/internal/analyzer"
@@ -70,6 +72,9 @@ func run(args []string) int {
 		repoResult, err = repoanalysis.Analyze(repoPath, analysis, spans)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: repo analysis skipped: %v\n", err)
+		} else if repoResult != nil && repoResult.Mode != "error-context" && traceFileHasErrorSignal(traceFile) {
+			// Fallback for traces whose parsed spans don't carry explicit error tokens.
+			repoResult.Mode = "error-context"
 		}
 	}
 	switch format {
@@ -197,4 +202,119 @@ func isHelpCommand(args []string) bool {
 
 func printVersion(w *os.File) {
 	fmt.Fprintf(w, "tracegap version %s\n", version)
+}
+
+func traceFileHasErrorSignal(path string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	var root any
+	if err := json.Unmarshal(data, &root); err != nil {
+		return false
+	}
+	return jsonHasErrorSignal(root, false)
+}
+
+func jsonHasErrorSignal(node any, inStatus bool) bool {
+	switch v := node.(type) {
+	case map[string]any:
+		for key, val := range v {
+			k := strings.ToLower(strings.TrimSpace(key))
+			nextInStatus := inStatus || k == "status"
+
+			if isErrorBoolKey(k) && truthyJSONValue(val) {
+				return true
+			}
+			if isHTTPStatusKey(k) {
+				if n, ok := intFromJSONValue(val); ok && n >= 500 {
+					return true
+				}
+			}
+			if inStatus && k == "code" {
+				if statusCodeIndicatesError(val) {
+					return true
+				}
+			}
+			if inStatus && k == "message" {
+				s := strings.ToLower(strings.TrimSpace(fmt.Sprintf("%v", val)))
+				if strings.Contains(s, "error") || strings.Contains(s, "exception") || strings.Contains(s, "fail") {
+					return true
+				}
+			}
+
+			if jsonHasErrorSignal(val, nextInStatus) {
+				return true
+			}
+		}
+	case []any:
+		for _, item := range v {
+			if jsonHasErrorSignal(item, inStatus) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isErrorBoolKey(key string) bool {
+	switch key {
+	case "error", "is_error", "errored":
+		return true
+	default:
+		return false
+	}
+}
+
+func isHTTPStatusKey(key string) bool {
+	switch key {
+	case "http.status_code", "status_code", "statuscode", "httpstatuscode":
+		return true
+	default:
+		return false
+	}
+}
+
+func statusCodeIndicatesError(v any) bool {
+	if n, ok := intFromJSONValue(v); ok {
+		// OTLP status.code uses 2 for error.
+		if n >= 2 {
+			return true
+		}
+	}
+	s := strings.ToLower(strings.TrimSpace(fmt.Sprintf("%v", v)))
+	return s == "status_code_error" || s == "error"
+}
+
+func truthyJSONValue(v any) bool {
+	switch x := v.(type) {
+	case bool:
+		return x
+	case float64:
+		return x != 0
+	case string:
+		s := strings.ToLower(strings.TrimSpace(x))
+		return s == "true" || s == "1" || s == "yes"
+	default:
+		return false
+	}
+}
+
+func intFromJSONValue(v any) (int64, bool) {
+	switch x := v.(type) {
+	case float64:
+		return int64(x), true
+	case string:
+		s := strings.TrimSpace(x)
+		if s == "" {
+			return 0, false
+		}
+		n, err := strconv.ParseInt(s, 10, 64)
+		if err != nil {
+			return 0, false
+		}
+		return n, true
+	default:
+		return 0, false
+	}
 }
