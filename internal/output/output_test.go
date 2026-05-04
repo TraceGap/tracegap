@@ -380,3 +380,43 @@ func TestPrintRepoAnalysisText_RendersMultipleMatchedRoots(t *testing.T) {
 		}
 	}
 }
+
+func TestPrintRepoAnalysisText_AsyncFlowSections(t *testing.T) {
+	result := &repoanalysis.Result{
+		Enabled:         true,
+		Mode:            "error-context",
+		AsyncDetected:   true,
+		AsyncWarning:    "Async execution detected across multiple services",
+		CorrelationHints: []string{"Shared identifiers between \"signup.request\" and \"stream.consume\": requestid123"},
+		PrimaryFlow: &repoanalysis.FlowResult{
+			RootSpanName: "signup.request",
+			MatchedRoot: &repoanalysis.MatchedRoot{FilePath: "internal/api/handler.go", Line: 56, Function: "api.(*Handler).handleSignup", Confidence: repoanalysis.ConfidenceHigh},
+			Candidates: []repoanalysis.Candidate{{
+				FilePath: "internal/payment/gateway.go", Line: 21, Function: "payment.(*HTTPTransport).PostJSON", Confidence: repoanalysis.ConfidenceHigh,
+				Why: []string{"No span detected in this function"}, ActionText: "Add or verify instrumentation around payment.(*HTTPTransport).PostJSON()",
+			}},
+		},
+		AsyncFlows: []repoanalysis.FlowResult{{
+			RootSpanName: "stream.consume",
+			MatchedRoot: &repoanalysis.MatchedRoot{FilePath: "internal/stream/consumer.go", Line: 21, Function: "stream.(*Consumer).consume", Confidence: repoanalysis.ConfidenceMedium},
+		}},
+	}
+
+	var buf bytes.Buffer
+	PrintRepoAnalysisText(&buf, result)
+	out := buf.String()
+	for _, want := range []string{
+		"Async execution detected across multiple services",
+		"Primary flow:",
+		"Async flow 1:",
+		"Root span: signup.request",
+		"Root span: stream.consume",
+		"Correlation hints:",
+		"Most suspicious uninstrumented code paths:",
+		"Start here:",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected output to contain %q, got %q", want, out)
+		}
+	}
+}

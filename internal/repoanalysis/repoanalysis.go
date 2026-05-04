@@ -78,11 +78,27 @@ type Result struct {
 	MatchedRoot       *MatchedRoot
 	MatchedRoots      []MatchedRoot
 	Candidates        []Candidate
+	AsyncDetected     bool
+	AsyncWarning      string
+	CorrelationHints  []string
+	PrimaryFlow       *FlowResult
+	AsyncFlows        []FlowResult
+}
+
+type FlowResult struct {
+	RootSpanName       string
+	RootSpanID         string
+	MatchedRoot        *MatchedRoot
+	WeakSignal         bool
+	WeakSignalMessage  string
+	Candidates         []Candidate
+	Classification     string
 }
 
 type rootContext struct {
 	root                 *analyzer.RootResult
 	rootName             string
+	rootMetaTokens       []string
 	entryID              codegraph.FunctionID
 	entryNode            *codegraph.FunctionNode
 	entryConfidence      Confidence
@@ -91,6 +107,7 @@ type rootContext struct {
 	weakSignal           bool
 	rootTokens           []string
 	childTokens          []string
+	evidenceGaps         []analyzer.Gap
 	gapTokens            []string
 	primaryGapPrevTokens []string
 	primaryGapKind       string
@@ -125,6 +142,13 @@ func Analyze(repoPath string, audit analyzer.AuditResult, spans []parser.Span) (
 		result.WeakSignal = true
 		result.WeakSignalMessage = "Weak signal: no root spans available for repo-aware matching."
 		return result, nil
+	}
+
+	primaryIdx, secondaryIdx := splitPrimaryAndSecondary(contexts)
+	asyncDetected := detectAsyncExecution(contexts, primaryIdx, secondaryIdx)
+	result.AsyncDetected = asyncDetected
+	if asyncDetected {
+		result.AsyncWarning = "Async execution detected across multiple services"
 	}
 
 	matchedRoots := make([]MatchedRoot, 0, len(contexts))
@@ -166,15 +190,14 @@ func Analyze(repoPath string, audit analyzer.AuditResult, spans []parser.Span) (
 	}
 
 	errorTokens := errorTokens(spans)
+	perContextCandidates := make([][]Candidate, len(contexts))
+	for i, ctx := range contexts {
+		perContextCandidates[i] = scoreCandidatesForContext(graph, ctx, result.Mode, errorTokens)
+	}
 
 	candidateByKey := map[string]Candidate{}
-	for _, ctx := range contexts {
-		for _, id := range graph.SortedIDs() {
-			fn := graph.Functions[id]
-			cand, ok := scoreCandidate(fn, id, ctx.entryID, ctx.rootName, result.Mode, ctx.root, selectEvidenceGaps(ctx.root), ctx.primaryGapPrevTokens, ctx.primaryGapKind, ctx.reachable, ctx.weakSignal, ctx.rootTokens, ctx.childTokens, ctx.gapTokens, errorTokens)
-			if !ok {
-				continue
-			}
+	for _, set := range perContextCandidates {
+		for _, cand := range set {
 			key := candidateKey(cand)
 			existing, exists := candidateByKey[key]
 			if !exists || cand.Score > existing.Score {
@@ -182,7 +205,6 @@ func Analyze(repoPath string, audit analyzer.AuditResult, spans []parser.Span) (
 			}
 		}
 	}
-
 	candidates := make([]Candidate, 0, len(candidateByKey))
 	for _, cand := range candidateByKey {
 		candidates = append(candidates, cand)
@@ -198,6 +220,69 @@ func Analyze(repoPath string, audit analyzer.AuditResult, spans []parser.Span) (
 		return candidates[i].Score > candidates[j].Score
 	})
 
+	result.Candidates = limitCandidates(candidates)
+
+	if asyncDetected {
+		primaryCtx := contexts[primaryIdx]
+		primaryMatched := toMatchedRoot(primaryCtx)
+		result.PrimaryFlow = &FlowResult{
+			RootSpanName:      primaryCtx.rootName,
+			RootSpanID:        strings.TrimSpace(primaryCtx.root.RootSpan.ID),
+			MatchedRoot:       primaryMatched,
+			WeakSignal:        primaryCtx.weakSignal,
+			WeakSignalMessage: weakSignalMessageFor(primaryCtx.weakSignal),
+			Candidates:        limitCandidates(perContextCandidates[primaryIdx]),
+			Classification:    "primary",
+		}
+		result.MatchedRoot = primaryMatched
+		result.Candidates = append([]Candidate(nil), result.PrimaryFlow.Candidates...)
+
+		asyncFlows := make([]FlowResult, 0, len(secondaryIdx))
+		for _, idx := range secondaryIdx {
+			ctx := contexts[idx]
+			asyncFlows = append(asyncFlows, FlowResult{
+				RootSpanName:      ctx.rootName,
+				RootSpanID:        strings.TrimSpace(ctx.root.RootSpan.ID),
+				MatchedRoot:       toMatchedRoot(ctx),
+				WeakSignal:        ctx.weakSignal,
+				WeakSignalMessage: weakSignalMessageFor(ctx.weakSignal),
+				Candidates:        limitCandidates(perContextCandidates[idx]),
+				Classification:    "async",
+			})
+		}
+		result.AsyncFlows = asyncFlows
+		result.CorrelationHints = correlationHints(primaryCtx, contexts, secondaryIdx)
+	}
+
+	return result, nil
+}
+
+func scoreCandidatesForContext(graph *codegraph.Graph, ctx rootContext, mode string, errorTokens []string) []Candidate {
+	candidates := make([]Candidate, 0, 16)
+	for _, id := range graph.SortedIDs() {
+		fn := graph.Functions[id]
+		cand, ok := scoreCandidate(fn, id, ctx.entryID, ctx.rootName, mode, ctx.root, ctx.evidenceGaps, ctx.primaryGapPrevTokens, ctx.primaryGapKind, ctx.reachable, ctx.weakSignal, ctx.rootTokens, ctx.childTokens, ctx.gapTokens, errorTokens)
+		if !ok {
+			continue
+		}
+		candidates = append(candidates, cand)
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].Score == candidates[j].Score {
+			if candidates[i].FilePath == candidates[j].FilePath {
+				return candidates[i].Line < candidates[j].Line
+			}
+			return candidates[i].FilePath < candidates[j].FilePath
+		}
+		return candidates[i].Score > candidates[j].Score
+	})
+	return candidates
+}
+
+func limitCandidates(candidates []Candidate) []Candidate {
+	if len(candidates) == 0 {
+		return nil
+	}
 	limit := defaultCandidateCount
 	if len(candidates) > defaultCandidateCount {
 		for i := defaultCandidateCount; i < len(candidates) && i < maxCandidateCount; i++ {
@@ -209,9 +294,241 @@ func Analyze(repoPath string, audit analyzer.AuditResult, spans []parser.Span) (
 	if limit > len(candidates) {
 		limit = len(candidates)
 	}
-	result.Candidates = candidates[:limit]
+	return append([]Candidate(nil), candidates[:limit]...)
+}
 
-	return result, nil
+func toMatchedRoot(ctx rootContext) *MatchedRoot {
+	if ctx.entryNode == nil {
+		return nil
+	}
+	return &MatchedRoot{
+		FilePath:   ctx.entryNode.FilePath,
+		Line:       ctx.entryNode.StartLine,
+		Function:   ctx.entryNode.QualifiedName,
+		Confidence: ctx.entryConfidence,
+		Why:        append([]string(nil), ctx.entryReasons...),
+	}
+}
+
+func weakSignalMessageFor(weak bool) string {
+	if !weak {
+		return ""
+	}
+	return "Weak signal: no confident root entrypoint match found, so reachable-path claims are intentionally omitted."
+}
+
+func splitPrimaryAndSecondary(contexts []rootContext) (int, []int) {
+	if len(contexts) == 0 {
+		return -1, nil
+	}
+	best := 0
+	bestScore := rootPriorityScore(contexts[0])
+	for i := 1; i < len(contexts); i++ {
+		s := rootPriorityScore(contexts[i])
+		if s > bestScore {
+			best = i
+			bestScore = s
+			continue
+		}
+		if s == bestScore && contexts[i].root != nil && contexts[best].root != nil {
+			if contexts[i].root.RootDuration > contexts[best].root.RootDuration {
+				best = i
+			}
+		}
+	}
+	secondary := make([]int, 0, len(contexts)-1)
+	for i := range contexts {
+		if i == best {
+			continue
+		}
+		secondary = append(secondary, i)
+	}
+	return best, secondary
+}
+
+func rootPriorityScore(ctx rootContext) float64 {
+	if ctx.root == nil {
+		return -1
+	}
+	name := strings.ToLower(strings.TrimSpace(ctx.rootName))
+	tokens := make(map[string]struct{}, len(ctx.rootTokens))
+	for _, t := range ctx.rootTokens {
+		tokens[strings.ToLower(strings.TrimSpace(t))] = struct{}{}
+	}
+	score := 0.0
+	for _, key := range []string{"web", "server", "http", "route", "request", "api", "handler", "frontend"} {
+		if _, ok := tokens[key]; ok {
+			score += 1.2
+		}
+	}
+	for _, key := range []string{"worker", "consumer", "queue", "stream", "messaging", "message", "kafka", "pubsub", "event", "job"} {
+		if _, ok := tokens[key]; ok {
+			score -= 1.3
+		}
+	}
+	if strings.Contains(name, "request") || strings.Contains(name, "http") || strings.Contains(name, "api") {
+		score += 1.5
+	}
+	if strings.Contains(name, "consume") || strings.Contains(name, "worker") || strings.Contains(name, "queue") || strings.Contains(name, "stream") {
+		score -= 1.5
+	}
+	if ctx.entryConfidence == ConfidenceHigh {
+		score += 0.8
+	} else if ctx.entryConfidence == ConfidenceMedium {
+		score += 0.3
+	}
+	return score
+}
+
+func detectAsyncExecution(contexts []rootContext, primaryIdx int, secondaryIdx []int) bool {
+	if len(contexts) <= 1 || primaryIdx < 0 {
+		return false
+	}
+	if len(secondaryIdx) == 0 {
+		return false
+	}
+	overlap := false
+	for _, idx := range secondaryIdx {
+		if rootsOverlap(contexts[primaryIdx].root, contexts[idx].root) {
+			overlap = true
+			break
+		}
+	}
+	if !overlap {
+		return false
+	}
+	if hasServiceDiversity(contexts, primaryIdx, secondaryIdx) {
+		return true
+	}
+	for _, idx := range secondaryIdx {
+		if looksAsyncRoot(contexts[idx]) {
+			return true
+		}
+	}
+	return false
+}
+
+func rootsOverlap(a, b *analyzer.RootResult) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	as := a.RootSpan
+	bs := b.RootSpan
+	if !as.HasTimestamps() || !bs.HasTimestamps() {
+		return false
+	}
+	return as.Start.Before(bs.End) && bs.Start.Before(as.End)
+}
+
+func hasServiceDiversity(contexts []rootContext, primaryIdx int, secondaryIdx []int) bool {
+	seen := map[string]struct{}{}
+	if s := inferredService(contexts[primaryIdx]); s != "" {
+		seen[s] = struct{}{}
+	}
+	for _, idx := range secondaryIdx {
+		if s := inferredService(contexts[idx]); s != "" {
+			seen[s] = struct{}{}
+		}
+	}
+	return len(seen) >= 2
+}
+
+func inferredService(ctx rootContext) string {
+	name := strings.ToLower(strings.TrimSpace(ctx.rootName))
+	if i := strings.Index(name, "."); i > 0 {
+		return name[:i]
+	}
+	for _, t := range ctx.rootMetaTokens {
+		t = strings.ToLower(strings.TrimSpace(t))
+		if t == "" {
+			continue
+		}
+		if t == "http" || t == "request" || t == "route" || t == "server" || t == "web" {
+			continue
+		}
+		return t
+	}
+	return ""
+}
+
+func looksAsyncRoot(ctx rootContext) bool {
+	tokens := make(map[string]struct{}, len(ctx.rootTokens))
+	for _, t := range ctx.rootTokens {
+		tokens[strings.ToLower(strings.TrimSpace(t))] = struct{}{}
+	}
+	for _, key := range []string{"worker", "consumer", "queue", "stream", "messaging", "kafka", "pubsub", "event", "job"} {
+		if _, ok := tokens[key]; ok {
+			return true
+		}
+	}
+	name := strings.ToLower(strings.TrimSpace(ctx.rootName))
+	return strings.Contains(name, "consume") || strings.Contains(name, "worker") || strings.Contains(name, "queue") || strings.Contains(name, "stream")
+}
+
+func correlationHints(primary rootContext, contexts []rootContext, secondaryIdx []int) []string {
+	if len(secondaryIdx) == 0 {
+		return nil
+	}
+	primarySet := make(map[string]struct{}, len(primary.rootMetaTokens))
+	for _, t := range primary.rootMetaTokens {
+		t = strings.ToLower(strings.TrimSpace(t))
+		if isCorrelationToken(t) {
+			primarySet[t] = struct{}{}
+		}
+	}
+	hints := make([]string, 0, len(secondaryIdx))
+	for _, idx := range secondaryIdx {
+		shared := make([]string, 0, 4)
+		seen := map[string]struct{}{}
+		for _, t := range contexts[idx].rootMetaTokens {
+			t = strings.ToLower(strings.TrimSpace(t))
+			if !isCorrelationToken(t) {
+				continue
+			}
+			if _, ok := primarySet[t]; !ok {
+				continue
+			}
+			if _, dup := seen[t]; dup {
+				continue
+			}
+			seen[t] = struct{}{}
+			shared = append(shared, t)
+		}
+		if len(shared) == 0 {
+			continue
+		}
+		sort.Strings(shared)
+		if len(shared) > 3 {
+			shared = shared[:3]
+		}
+		hints = append(hints, "Shared identifiers between \""+primary.rootName+"\" and \""+contexts[idx].rootName+"\": "+strings.Join(shared, ", "))
+	}
+	if len(hints) == 0 {
+		hints = append(hints, "No shared user/event/request identifiers found in span metadata.")
+	}
+	return hints
+}
+
+func isCorrelationToken(t string) bool {
+	if t == "" {
+		return false
+	}
+	if strings.Contains(t, "user") || strings.Contains(t, "event") || strings.Contains(t, "request") || strings.Contains(t, "trace") {
+		return true
+	}
+	if len(t) >= 8 {
+		hasDigit := false
+		for _, r := range t {
+			if r >= '0' && r <= '9' {
+				hasDigit = true
+				break
+			}
+		}
+		if hasDigit {
+			return true
+		}
+	}
+	return false
 }
 
 func buildRootContexts(audit analyzer.AuditResult, spans []parser.Span, graph *codegraph.Graph) []rootContext {
@@ -245,6 +562,7 @@ func buildRootContexts(audit analyzer.AuditResult, spans []parser.Span, graph *c
 		contexts = append(contexts, rootContext{
 			root:                 root,
 			rootName:             rootName,
+			rootMetaTokens:       rootMetaTokens,
 			entryID:              entry.FunctionID,
 			entryNode:            graph.Functions[entry.FunctionID],
 			entryConfidence:      entryConfidence,
@@ -253,6 +571,7 @@ func buildRootContexts(audit analyzer.AuditResult, spans []parser.Span, graph *c
 			weakSignal:           weak,
 			rootTokens:           dedupeTokens(append(tokenize(rootName), rootMetaTokens...)),
 			childTokens:          tokenize(strings.Join(childNames, " ")),
+			evidenceGaps:         evidenceGaps,
 			gapTokens:            gapContextTokens(root, evidenceGaps),
 			primaryGapPrevTokens: primaryGapPrevSpanTokens(root, evidenceGaps),
 			primaryGapKind:       primaryGapKind(evidenceGaps),

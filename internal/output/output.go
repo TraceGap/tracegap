@@ -94,6 +94,25 @@ func PrintRepoAnalysisText(w io.Writer, result *repoanalysis.Result) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Repo Analysis (Go)")
 
+	if result.AsyncDetected && result.PrimaryFlow != nil {
+		if strings.TrimSpace(result.AsyncWarning) != "" {
+			fmt.Fprintln(w, result.AsyncWarning)
+		}
+		fmt.Fprintln(w, "Primary flow:")
+		printFlowText(w, result.PrimaryFlow, result.Mode)
+		for i := range result.AsyncFlows {
+			fmt.Fprintf(w, "Async flow %d:\n", i+1)
+			printFlowText(w, &result.AsyncFlows[i], result.Mode)
+		}
+		if len(result.CorrelationHints) > 0 {
+			fmt.Fprintln(w, "Correlation hints:")
+			for _, hint := range result.CorrelationHints {
+				fmt.Fprintf(w, "- %s\n", hint)
+			}
+		}
+		return
+	}
+
 	if len(result.MatchedRoots) > 1 {
 		fmt.Fprintln(w, "Matched root spans:")
 		for i, mr := range result.MatchedRoots {
@@ -132,6 +151,48 @@ func PrintRepoAnalysisText(w io.Writer, result *repoanalysis.Result) {
 			fmt.Fprintf(w, "   - %s\n", why)
 		}
 		if result.Mode == "error-context" {
+			fmt.Fprintln(w, "   Start here:")
+		} else {
+			fmt.Fprintln(w, "   Consider:")
+		}
+		fmt.Fprintf(w, "   %s\n", cand.ActionText)
+	}
+}
+
+func printFlowText(w io.Writer, flow *repoanalysis.FlowResult, mode string) {
+	if flow == nil {
+		return
+	}
+	if strings.TrimSpace(flow.RootSpanName) != "" {
+		fmt.Fprintf(w, "Root span: %s\n", flow.RootSpanName)
+	}
+	if flow.MatchedRoot != nil {
+		fmt.Fprintln(w, "Matched root span:")
+		fmt.Fprintf(w, "%s:%d\n", flow.MatchedRoot.FilePath, flow.MatchedRoot.Line)
+		fmt.Fprintf(w, "Function: %s\n", flow.MatchedRoot.Function)
+		fmt.Fprintf(w, "Confidence: %s\n", string(flow.MatchedRoot.Confidence))
+	}
+	if flow.WeakSignal && strings.TrimSpace(flow.WeakSignalMessage) != "" {
+		fmt.Fprintln(w, flow.WeakSignalMessage)
+	}
+	if mode == "error-context" {
+		fmt.Fprintln(w, "Most suspicious uninstrumented code paths:")
+	} else {
+		fmt.Fprintln(w, "Likely instrumentation opportunities:")
+	}
+	if len(flow.Candidates) == 0 {
+		fmt.Fprintln(w, "No confident candidates found.")
+		return
+	}
+	for i, cand := range flow.Candidates {
+		fmt.Fprintf(w, "%d. %s:%d\n", i+1, cand.FilePath, cand.Line)
+		fmt.Fprintf(w, "   Function: %s\n", cand.Function)
+		fmt.Fprintf(w, "   Confidence: %s\n", string(cand.Confidence))
+		fmt.Fprintln(w, "   Why:")
+		for _, why := range cand.Why {
+			fmt.Fprintf(w, "   - %s\n", why)
+		}
+		if mode == "error-context" {
 			fmt.Fprintln(w, "   Start here:")
 		} else {
 			fmt.Fprintln(w, "   Consider:")

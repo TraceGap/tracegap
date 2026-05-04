@@ -610,8 +610,8 @@ func SaveOffset(ctx context.Context, db *sql.DB) error {
 	spans := []parser.Span{
 		{ID: "r1", Name: "signup.request", Start: base, End: base.Add(time.Second), HasStart: true, HasEnd: true},
 		{ID: "r1c1", ParentID: "r1", Name: "auth", Start: base, End: base.Add(250 * time.Millisecond), HasStart: true, HasEnd: true},
-		{ID: "r2", Name: "stream.consume", Start: base.Add(1500 * time.Millisecond), End: base.Add(2500 * time.Millisecond), HasStart: true, HasEnd: true},
-		{ID: "r2c1", ParentID: "r2", Name: "decode", Start: base.Add(1500 * time.Millisecond), End: base.Add(1800 * time.Millisecond), HasStart: true, HasEnd: true},
+		{ID: "r2", Name: "stream.consume", Start: base.Add(500 * time.Millisecond), End: base.Add(1500 * time.Millisecond), HasStart: true, HasEnd: true},
+		{ID: "r2c1", ParentID: "r2", Name: "decode", Start: base.Add(500 * time.Millisecond), End: base.Add(800 * time.Millisecond), HasStart: true, HasEnd: true},
 	}
 	audit := analyzer.Analyze(spans, analyzer.DefaultTimelineWidth)
 
@@ -624,6 +624,18 @@ func SaveOffset(ctx context.Context, db *sql.DB) error {
 	}
 	if len(res.Candidates) == 0 {
 		t.Fatalf("expected candidates from multi-root analysis")
+	}
+	if !res.AsyncDetected {
+		t.Fatalf("expected async detection for overlapping multi-root trace")
+	}
+	if res.PrimaryFlow == nil {
+		t.Fatalf("expected primary flow")
+	}
+	if len(res.AsyncFlows) == 0 {
+		t.Fatalf("expected async flow(s)")
+	}
+	if len(res.CorrelationHints) == 0 {
+		t.Fatalf("expected correlation hints")
 	}
 }
 
